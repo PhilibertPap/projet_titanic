@@ -30,7 +30,7 @@ rivet_band_half_width_u = 0.0018
 
 # Zone probable de rupture (règle géométrique simple en espace paramétrique)
 # u ~ position longitudinale (x), v ~ position transversale (y = B v)
-# L'iceberg se déplace sur toute la longueur -> on raffine surtout selon v.
+# L'iceberg se déplace sur toute la longueur -> on raffine une BANDE en v sur toute la longueur x.
 impact_v_center = 0.00
 impact_v_half_width = 0.18
 
@@ -96,9 +96,23 @@ def hull_xyz(u, v):
     z = z_keel + c * v**2 + H * v**4
     return x, y, z
 
-# Grosse maille de fond pour éviter une explosion du nombre de triangles.
-# (Les surfaces sont triangulées par Gmsh; `lcar` pilote le raffinement effectif.)
-lcar = 1.2
+# Tailles caractéristiques anisotropes par bande (pour futur phase-field local/global).
+# - bande d'impact/fracture probable: maillage fin
+# - ailleurs: maillage nettement plus grossier
+lcar_fine = 0.35
+lcar_transition = 0.8
+lcar_coarse = 2.0
+
+
+def point_size_from_v(v):
+    dv = abs(v - impact_v_center)
+    if dv <= impact_v_half_width:
+        return lcar_fine
+    if dv <= 2.5 * impact_v_half_width:
+        return lcar_transition
+    return lcar_coarse
+
+
 pts = [[0]*(Nv+1) for _ in range(Nu+1)]
 u_nodes = [i / Nu for i in range(Nu + 1)]
 v01_nodes = _piecewise_refined_nodes(Nv, 0.5 * (impact_v_center + 1.0), 0.5 * impact_v_half_width)
@@ -109,7 +123,7 @@ for i in range(Nu+1):
     for j in range(Nv+1):
         v = v_nodes[j]
         x, y, z = hull_xyz(u, v)
-        pts[i][j] = geom.addPoint(x, y, z, lcar)
+        pts[i][j] = geom.addPoint(x, y, z, point_size_from_v(v))
 
 # Lignes longitudinales (u = const)
 long_lines = []
