@@ -61,6 +61,14 @@ def _solver_options(cfg, kind: str):
     raise ValueError(f"Unknown solver kind: {kind}")
 
 
+def _positive_part(x):
+    return 0.5 * (x + ufl.sqrt(x * x))
+
+
+def _deviatoric_2d(tensor):
+    return tensor - (ufl.tr(tensor) / 2.0) * ufl.Identity(2)
+
+
 def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
     domain = model.domain
     t = fem.Constant(domain, 0.0)
@@ -95,7 +103,7 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
     c0 = fem.Constant(domain, (x0, y_mid, z_mid))
     v_ice = fem.Constant(domain, (vx, 0.0, 0.0))
     sigma = fem.Constant(domain, cfg.sigma)
-    p0 = fem.Constant(domain, cfg.pressure_peak)
+    p0 = fem.Constant(domain, 0.0 if getattr(cfg, "ramp_amplitude_iceberg", False) else cfg.pressure_peak)
 
     # Default: no external Neumann load (used for Dirichlet-driven iceberg mode)
     zero_vec = fem.Constant(domain, (0.0, 0.0, 0.0))
@@ -169,7 +177,12 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
         lmbda = model.E_field * model.nu_field / (1 + model.nu_field) / (1 - 2 * model.nu_field)
         mu = model.E_field / 2 / (1 + model.nu_field)
         lmbda_ps = 2 * lmbda * mu / (lmbda + 2 * mu)
-        psi_drive_expr = 0.5 * lmbda_ps * ufl.tr(eps) ** 2 + mu * ufl.inner(eps, eps)
+        if getattr(cfg, "phase_field_split_traction_compression", False):
+            tr_eps = ufl.tr(eps)
+            dev_eps = _deviatoric_2d(eps)
+            psi_drive_expr = 0.5 * lmbda_ps * _positive_part(tr_eps) ** 2 + mu * ufl.inner(dev_eps, dev_eps)
+        else:
+            psi_drive_expr = 0.5 * lmbda_ps * ufl.tr(eps) ** 2 + mu * ufl.inner(eps, eps)
         psi_drive = fem.Function(Vd, name="PsiDrive")
         psi_eval = fem.Expression(psi_drive_expr, Vd.element.interpolation_points)
 
@@ -204,13 +217,23 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
                     mech_wall_s = 0.0
                     damage_wall_s = 0.0
                     t.value = tn
+                    facteur_rampe = 1.0
+                    if getattr(cfg, "ramp_amplitude_iceberg", False):
+                        facteur_rampe = 0.0 if cfg.t_final <= 0 else float(tn / cfg.t_final)
+                    if cfg.iceberg_loading == "neumann_pressure":
+                        p0.value = cfg.pressure_peak * facteur_rampe
                     if cfg.iceberg_loading == "dirichlet_displacement":
                         x_center = x0 + vx * tn
 
                         def prescribed_displacement(x):
                             r2 = (x[0] - x_center) ** 2 + (x[2] - z_mid) ** 2
-                            amplitude = cfg.iceberg_disp_sign * cfg.iceberg_disp_peak * np.exp(
+                            amplitude = (
+                                facteur_rampe
+                                * cfg.iceberg_disp_sign
+                                * cfg.iceberg_disp_peak
+                                * np.exp(
                                 -r2 / (2 * cfg.sigma**2)
+                                )
                             )
                             return np.vstack(
                                 (np.zeros_like(amplitude), amplitude, np.zeros_like(amplitude))
@@ -228,14 +251,21 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
                     if damage_enabled:
                         damage_t0 = perf_counter()
                         psi_drive.interpolate(psi_eval)
-                        history.x.array[:] = np.maximum(
-                            history.x.array, np.maximum(psi_drive.x.array, 0.0)
+                        seuil = float(getattr(cfg, "phase_field_seuil_nucleation_j_m3", 0.0))
+                        psi_effective = np.maximum(psi_drive.x.array - seuil, 0.0)
+                        history.x.array[:] = np.maximum(history.x.array, psi_effective)
+
+                        maj_damage = int(
+                            getattr(cfg, "phase_field_mise_a_jour_tous_les_n_pas", 1)
                         )
-                        damage_problem.solve()
-                        d_clipped = np.clip(damage.x.array, 0.0, 1.0)
-                        d_irrev = np.maximum(damage_old.x.array, d_clipped)
-                        damage.x.array[:] = d_irrev
-                        damage_old.x.array[:] = d_irrev
+                        if (n % max(1, maj_damage) == 0) or (n == len(time_steps) - 1):
+                            damage_problem.solve()
+                            d_clipped = np.clip(damage.x.array, 0.0, 1.0)
+                            d_irrev = np.maximum(damage_old.x.array, d_clipped)
+                            damage.x.array[:] = d_irrev
+                            damage_old.x.array[:] = d_irrev
+                        else:
+                            damage.x.array[:] = damage_old.x.array
                         damage_wall_s = perf_counter() - damage_t0
                     else:
                         damage.x.array[:] = 0.0

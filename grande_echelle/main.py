@@ -52,6 +52,7 @@ def config_par_defaut() -> dict:
         "sigma": 3.0,
         "pressure_peak": 5e6,
         "iceberg_loading": "dirichlet_displacement",
+        "ramp_amplitude_iceberg": True,
         "iceberg_disp_peak": 5e-2,
         "iceberg_disp_sign": 1.0,
         "iceberg_patch_radius_factor": 3.0,
@@ -77,6 +78,12 @@ def config_par_defaut() -> dict:
         "phase_field_gc_j_m2": 7000.0,
         "phase_field_l0_m": 0.4,
         "phase_field_residual_stiffness": 1e-6,
+        "phase_field_split_traction_compression": True,
+        # Seuil simple de nucleation (energie volumique) pour eviter le dommage
+        # "instantane" a cause du bruit numerique / d'un chargement trop abrupt.
+        "phase_field_seuil_nucleation_j_m3": 8.0e4,
+        # Frequence de mise a jour du dommage global (1 = tous les pas)
+        "phase_field_mise_a_jour_tous_les_n_pas": 1,
         "utiliser_bandes_rivets_z": True,
         "bandes_rivets_z": bandes_rivets,
         "mechanics_petsc_options": None,
@@ -135,7 +142,7 @@ def config_apercu_rapide():
         case_name="preview_paraview_ultra_fast",
         num_steps=8,
         t_final=0.8,
-        ecrire_vtk_tous_les_n_pas=2,
+        ecrire_vtk_tous_les_n_pas=1,
         iceberg_loading="neumann_pressure",
         pressure_peak=2e5,
         sigma=2.5,
@@ -163,11 +170,15 @@ def config_etude_rivets_rapide(with_rivets: bool = True):
     """
     base = creer_config(
         case_name="titanic_rivets_rapide",
-        num_steps=12,
-        ecrire_vtk_tous_les_n_pas=3,
+        num_steps=20,
+        ecrire_vtk_tous_les_n_pas=1,
         afficher_console_tous_les_n_pas=2,
         # Exemple de pas adaptes simples (plus denses au milieu de l'impact)
-        temps_relatifs=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.58, 0.66, 0.74, 0.82, 0.9, 1.0],
+        temps_relatifs=[
+            0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
+            0.50, 0.56, 0.62, 0.68, 0.74, 0.80, 0.86, 0.92, 0.96, 1.0
+        ],
+        phase_field_mise_a_jour_tous_les_n_pas=1,
     )
     return config_etude_rivets(with_rivets=with_rivets, base=base)
 
