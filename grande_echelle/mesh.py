@@ -21,8 +21,8 @@ H = 0.02
 # - plus grossier ailleurs pour accélérer les calculs
 # Mode aperçu rapide (ParaView / itérations de mise au point)
 # Réduire fortement la taille pour accélérer la génération + le solveur.
-Nu = 72
-Nv = 10
+Nu = 36
+Nv = 6
 rivet_u_centers = [0.2, 0.4, 0.6, 0.8]
 # Rivet Titanic: diametre nominal ~0.875 in (22.2 mm), pas longitudinal ~3 in (76.2 mm).
 # La bande materiau est homogenisee. Avec Nu=320, une colonne vaut L/Nu=0.3125 m.
@@ -96,7 +96,9 @@ def hull_xyz(u, v):
     z = z_keel + c * v**2 + H * v**4
     return x, y, z
 
-lcar = 0.15
+# Grosse maille de fond pour éviter une explosion du nombre de triangles.
+# (Les surfaces sont triangulées par Gmsh; `lcar` pilote le raffinement effectif.)
+lcar = 1.2
 pts = [[0]*(Nv+1) for _ in range(Nu+1)]
 u_nodes = [i / Nu for i in range(Nu + 1)]
 v01_nodes = _piecewise_refined_nodes(Nv, 0.5 * (impact_v_center + 1.0), 0.5 * impact_v_half_width)
