@@ -33,8 +33,8 @@ class LocalPhaseFieldRunConfig:
     use_tension_compression_split: bool = True
     ksp_type: str = "preonly"
     pc_type: str = "lu"
-    vtk_write_stride: int = 1
-    monitor_print_stride: int = 1
+    ecrire_vtk_tous_les_n_pas: int = 1
+    afficher_console_tous_les_n_pas: int = 1
 
 
 def _load_baseline(config: LocalPhaseFieldRunConfig) -> tuple[float, float]:
@@ -214,7 +214,7 @@ def run_local_phase_field(config: LocalPhaseFieldRunConfig | None = None) -> Pat
                     if increment < config.alt_tol:
                         break
 
-                if (step % config.vtk_write_stride == 0) or (step == config.n_steps):
+                if (step % config.ecrire_vtk_tous_les_n_pas == 0) or (step == config.n_steps):
                     disp_vtk.write_function(u, float(step))
                     dam_vtk.write_function(d, float(step))
 
@@ -227,13 +227,13 @@ def run_local_phase_field(config: LocalPhaseFieldRunConfig | None = None) -> Pat
                     (step, tau, max_u, max_d, mean_d, frac_d95, step_wall_s, mech_wall_s, damage_wall_s)
                 )
                 if MPI.COMM_WORLD.rank == 0 and (
-                    step % config.monitor_print_stride == 0 or step == config.n_steps
+                    step % config.afficher_console_tous_les_n_pas == 0 or step == config.n_steps
                 ):
                     print(
                         f"Step {step}/{config.n_steps}, tau={tau:.3f}, "
                         f"max|u|={max_u:.3e}, max(d)={max_d:.3e}, "
                         f"mean(d)={mean_d:.3e}, frac(d>=0.95)={frac_d95:.3e}, "
-                        f"dt={step_wall_s:.2f}s (u={mech_wall_s:.2f}s, d={damage_wall_s:.2f}s)"
+                        f"temps_pas={step_wall_s:.2f}s (u={mech_wall_s:.2f}s, phase_field={damage_wall_s:.2f}s)"
                     )
 
     if MPI.COMM_WORLD.rank == 0:
@@ -247,9 +247,9 @@ def run_local_phase_field(config: LocalPhaseFieldRunConfig | None = None) -> Pat
                     "max_damage",
                     "mean_damage",
                     "frac_damage_ge_095",
-                    "step_wall_s",
-                    "u_solve_wall_s",
-                    "d_solve_wall_s",
+                    "temps_pas_s",
+                    "temps_u_s",
+                    "temps_phase_field_s",
                 ]
             )
             writer.writerows(monitor_rows)

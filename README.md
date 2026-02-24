@@ -43,6 +43,24 @@ python petite_echelle/local_phase_field.py
 
 - soit en gardant les proprietes rivets differentes (cas "avec effet rivets")
 - soit en mettant les memes proprietes que la coque (`rivet_* = shell_*`) pour un cas "sans effet rivets"
+- ou utiliser les presets deja prets dans `grande_echelle/main.py` :
+  - `config_etude_rivets_rapide(with_rivets=True/False)`
+  - `config_etude_rivets_production(with_rivets=True/False)`
+
+Exemple (dans un petit script Python ou un terminal interactif) :
+
+```python
+from grande_echelle.main import lancer_calcul, config_etude_rivets_rapide
+
+cfg = config_etude_rivets_rapide(with_rivets=True)
+lancer_calcul(cfg)
+```
+
+Ou plus simplement :
+
+```bash
+python run_rivets_ab.py
+```
 
 ## Sorties importantes
 

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import basix
+import numpy as np
 import ufl
 from dolfinx import fem
 
@@ -49,6 +50,37 @@ def _set_cells_value(field, cells, value: float):
     field.x.array[cells] = value
 
 
+def _champ_facteur_bandes_rivets(domain, bandes_cfg, nom_facteur: str, default: float = 1.0):
+    V0 = fem.functionspace(domain, ("DG", 0))
+    facteur = fem.Function(V0, name=f"{nom_facteur}_BandesRivets")
+    facteur.x.array[:] = default
+    if not bandes_cfg:
+        return facteur
+
+    bandes = []
+    for bande in bandes_cfg:
+        zc = float(bande["z_centre_m"])
+        largeur = float(bande["largeur_m"])
+        bandes.append(
+            (
+                zc - 0.5 * largeur,
+                zc + 0.5 * largeur,
+                float(bande.get(nom_facteur, default)),
+            )
+        )
+
+    def valeur_par_z(x):
+        z = x[2]
+        out = np.full_like(z, float(default), dtype=float)
+        for zmin, zmax, valeur in bandes:
+            masque = (z >= zmin) & (z <= zmax)
+            out[masque] = valeur
+        return out
+
+    facteur.interpolate(valeur_par_z)
+    return facteur
+
+
 def _build_material_fields(domain, cell_tags, cfg):
     """
     Champs matériaux par cellules (coque + bande rivets via tags).
@@ -64,7 +96,19 @@ def _build_material_fields(domain, cell_tags, cfg):
         _set_cells_value(nu, rivet_cells, cfg.rivet_poisson_ratio)
         _set_cells_value(thick, rivet_cells, cfg.rivet_thickness)
 
+    if getattr(cfg, "utiliser_bandes_rivets_z", False):
+        bandes = list(getattr(cfg, "bandes_rivets_z", []))
+        facteur_E = _champ_facteur_bandes_rivets(domain, bandes, "facteur_E", 1.0)
+        facteur_t = _champ_facteur_bandes_rivets(domain, bandes, "facteur_epaisseur", 1.0)
+        E.x.array[:] *= facteur_E.x.array
+        thick.x.array[:] *= facteur_t.x.array
+
     return E, nu, thick
+
+
+def _build_gc_factor_field(domain, cfg):
+    bandes = list(getattr(cfg, "bandes_rivets_z", [])) if getattr(cfg, "utiliser_bandes_rivets_z", False) else []
+    return _champ_facteur_bandes_rivets(domain, bandes, "facteur_Gc", 1.0)
 
 
 @dataclass
@@ -87,6 +131,7 @@ class ShellModel:
     E_field: any
     nu_field: any
     thick_field: any
+    gc_factor_field: any
     damage_state: any
 
 
@@ -157,6 +202,7 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
     Vd = fem.functionspace(domain, ("CG", 1))
     damage_state = fem.Function(Vd, name="DamageState")
     damage_state.x.array[:] = 0.0
+    gc_factor_field = _build_gc_factor_field(domain, cfg)
     k_res_mech = fem.Constant(
         domain,
         cfg.phase_field_residual_stiffness if cfg.enable_global_phase_field else 0.0,
@@ -210,5 +256,6 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
         E_field=E,
         nu_field=nu,
         thick_field=thick,
+        gc_factor_field=gc_factor_field,
         damage_state=damage_state,
     )

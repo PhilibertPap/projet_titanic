@@ -13,10 +13,18 @@ def moving_gaussian_pressure(domain, c0, v_ice, t, sigma, p0):
     return p0 * ufl.exp(-r2 / (2 * sigma**2))
 
 
+def _val_cfg(cfg, nouveau_nom, ancien_nom, default=None):
+    if hasattr(cfg, nouveau_nom):
+        return getattr(cfg, nouveau_nom)
+    if hasattr(cfg, ancien_nom):
+        return getattr(cfg, ancien_nom)
+    return default
+
+
 def _write_monitor_csv(path, rows):
     lines = [
         "step,time,max_u_inf,max_damage,mean_damage,frac_damage_ge_095,"
-        "step_wall_s,mech_wall_s,damage_wall_s"
+        "temps_pas_s,temps_meca_s,temps_phase_field_s"
     ]
     for step, time_value, max_u, max_d, mean_d, frac_d95, step_wall, mech_wall, damage_wall in rows:
         lines.append(
@@ -33,6 +41,16 @@ def _resolve_phase_field_params(cfg, phase_field_preset):
         gc_value = float(phase_field_preset.get("Gc_J_m2", gc_value))
         l0_value = float(phase_field_preset.get("l0_m", l0_value))
     return gc_value, l0_value
+
+
+def _time_values(cfg):
+    # Option simple pour un pas de temps adapte:
+    # si cfg.temps_relatifs est fourni (liste de valeurs entre 0 et 1), on l'utilise.
+    # Sinon on garde un pas uniforme.
+    temps_relatifs = getattr(cfg, "temps_relatifs", None)
+    if temps_relatifs:
+        return cfg.t_final * np.array(temps_relatifs, dtype=float)
+    return np.linspace(0.0, cfg.t_final, cfg.num_steps + 1)
 
 
 def _solver_options(cfg, kind: str):
@@ -133,7 +151,8 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
     damage_enabled = cfg.enable_global_phase_field
     if damage_enabled:
         gc_value, l0_value = _resolve_phase_field_params(cfg, phase_field_preset)
-        gc = fem.Constant(domain, gc_value)
+        gc = fem.Function(model.gc_factor_field.function_space, name="GcField")
+        gc.x.array[:] = gc_value * model.gc_factor_field.x.array
         l0 = fem.Constant(domain, l0_value)
         residual_stiffness = fem.Constant(domain, cfg.phase_field_residual_stiffness)
 
@@ -174,7 +193,7 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
         psi_eval = None
         damage_problem = None
 
-    time_steps = np.linspace(0.0, cfg.t_final, cfg.num_steps + 1)
+    time_steps = _time_values(cfg)
     monitor_rows = []
 
     with io.VTKFile(MPI.COMM_WORLD, output_layout["displacement_file"], "w") as disp_vtk:
@@ -221,7 +240,8 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
                     else:
                         damage.x.array[:] = 0.0
 
-                    if (n % cfg.vtk_write_stride == 0) or (n == len(time_steps) - 1):
+                    ecrire_vtk_tous_les_n_pas = int(_val_cfg(cfg, "ecrire_vtk_tous_les_n_pas", "vtk_write_stride", 1))
+                    if (n % ecrire_vtk_tous_les_n_pas == 0) or (n == len(time_steps) - 1):
                         disp_vtk.write_function(u_out, tn)
                         rot_vtk.write_function(theta_out, tn)
                         damage_vtk.write_function(damage, tn)
@@ -245,14 +265,15 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
                         )
                     )
                     if MPI.COMM_WORLD.rank == 0 and (
-                        n % cfg.monitor_print_stride == 0 or n == len(time_steps) - 1
+                        n % int(_val_cfg(cfg, "afficher_console_tous_les_n_pas", "monitor_print_stride", 1)) == 0
+                        or n == len(time_steps) - 1
                     ):
                         print(
                             f"Step {n}/{len(time_steps)-1}, t={tn:.3e}, "
                             f"max|u|={u_max:.3e}, max(d)={max_d:.3e}, "
                             f"mean(d)={mean_d:.3e}, frac(d>=0.95)={frac_d95:.3e}, "
-                            f"dt={step_wall_s:.2f}s (mech={mech_wall_s:.2f}s, "
-                            f"damage={damage_wall_s:.2f}s)"
+                            f"temps_pas={step_wall_s:.2f}s (meca={mech_wall_s:.2f}s, "
+                            f"phase_field={damage_wall_s:.2f}s)"
                         )
 
     if MPI.COMM_WORLD.rank == 0:

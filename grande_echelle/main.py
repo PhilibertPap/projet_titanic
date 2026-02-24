@@ -18,6 +18,22 @@ except ImportError:  # pragma: no cover - script execution fallback
 
 
 def config_par_defaut() -> dict:
+    # Bandes de rivets "homogeneisees" (approximation grande echelle):
+    # on place des bandes horizontales selon z (strakes/seams), autour de la zone immergee.
+    # Valeurs par defaut prudentes et modifiables.
+    bandes_rivets = []
+    for z_centre in (-9.3, -8.1, -6.9, -5.7, -4.5, -3.3, -2.1, -0.9):
+        bandes_rivets.append(
+            {
+                "nom": f"bande_z_{z_centre:+.1f}m".replace(".", "p"),
+                "z_centre_m": z_centre,
+                "largeur_m": 0.30,  # zone influencee (homogeneisee), pas juste le diametre du rivet
+                "facteur_E": 0.98,
+                "facteur_epaisseur": 1.00,
+                "facteur_Gc": 0.88,
+            }
+        )
+
     return {
         "mesh_stem": "mesh/coque",
         "results_root": "results",
@@ -41,8 +57,8 @@ def config_par_defaut() -> dict:
         "iceberg_patch_radius_factor": 3.0,
         "t_final": 1.0,
         "num_steps": 20,
-        "vtk_write_stride": 1,
-        "monitor_print_stride": 1,
+        "ecrire_vtk_tous_les_n_pas": 1,
+        "afficher_console_tous_les_n_pas": 1,
         "left_facet_tag": 1,
         "right_facet_tag": 2,
         "bottom_facet_tag": 3,
@@ -61,6 +77,8 @@ def config_par_defaut() -> dict:
         "phase_field_gc_j_m2": 7000.0,
         "phase_field_l0_m": 0.4,
         "phase_field_residual_stiffness": 1e-6,
+        "utiliser_bandes_rivets_z": True,
+        "bandes_rivets_z": bandes_rivets,
         "mechanics_petsc_options": None,
         "damage_petsc_options": None,
         "petsc_options": {"ksp_type": "preonly", "pc_type": "lu"},
@@ -75,6 +93,10 @@ def creer_config(**updates):
 
 def config_vers_dict(cfg) -> dict:
     data = dict(vars(cfg))
+    if "ecrire_vtk_tous_les_n_pas" not in data and "vtk_write_stride" in data:
+        data["ecrire_vtk_tous_les_n_pas"] = data["vtk_write_stride"]
+    if "afficher_console_tous_les_n_pas" not in data and "monitor_print_stride" in data:
+        data["afficher_console_tous_les_n_pas"] = data["monitor_print_stride"]
     if data.get("mechanics_petsc_options") is None:
         data["mechanics_petsc_options"] = dict(data["petsc_options"])
     if data.get("damage_petsc_options") is None:
@@ -83,14 +105,24 @@ def config_vers_dict(cfg) -> dict:
 
 
 def verifier_config(cfg) -> None:
+    # Compatibilite si un ancien objet config est passe
+    if not hasattr(cfg, "ecrire_vtk_tous_les_n_pas") and hasattr(cfg, "vtk_write_stride"):
+        cfg.ecrire_vtk_tous_les_n_pas = cfg.vtk_write_stride
+    if not hasattr(cfg, "afficher_console_tous_les_n_pas") and hasattr(cfg, "monitor_print_stride"):
+        cfg.afficher_console_tous_les_n_pas = cfg.monitor_print_stride
+    if not hasattr(cfg, "utiliser_bandes_rivets_z"):
+        cfg.utiliser_bandes_rivets_z = False
+    if not hasattr(cfg, "bandes_rivets_z"):
+        cfg.bandes_rivets_z = []
+
     if cfg.num_steps <= 0:
         raise ValueError("num_steps must be > 0")
     if cfg.t_final <= 0.0:
         raise ValueError("t_final must be > 0")
-    if cfg.vtk_write_stride <= 0:
-        raise ValueError("vtk_write_stride must be >= 1")
-    if cfg.monitor_print_stride <= 0:
-        raise ValueError("monitor_print_stride must be >= 1")
+    if cfg.ecrire_vtk_tous_les_n_pas <= 0:
+        raise ValueError("ecrire_vtk_tous_les_n_pas must be >= 1")
+    if cfg.afficher_console_tous_les_n_pas <= 0:
+        raise ValueError("afficher_console_tous_les_n_pas must be >= 1")
     if cfg.iceberg_loading not in {"neumann_pressure", "dirichlet_displacement"}:
         raise ValueError("iceberg_loading must be 'neumann_pressure' or 'dirichlet_displacement'")
 
@@ -103,7 +135,7 @@ def config_apercu_rapide():
         case_name="preview_paraview_ultra_fast",
         num_steps=8,
         t_final=0.8,
-        vtk_write_stride=2,
+        ecrire_vtk_tous_les_n_pas=2,
         iceberg_loading="neumann_pressure",
         pressure_peak=2e5,
         sigma=2.5,
@@ -118,7 +150,51 @@ def config_etude_rivets(with_rivets: bool, base=None):
         data["rivet_young_modulus"] = data["shell_young_modulus"]
         data["rivet_poisson_ratio"] = data["shell_poisson_ratio"]
         data["rivet_thickness"] = data["shell_thickness"]
+        data["utiliser_bandes_rivets_z"] = False
     return SimpleNamespace(**data)
+
+
+def config_etude_rivets_rapide(with_rivets: bool = True):
+    """
+    Preset de travail rapide:
+    - moins d'ecritures VTK
+    - moins d'affichage console
+    - moins de pas de temps
+    """
+    base = creer_config(
+        case_name="titanic_rivets_rapide",
+        num_steps=12,
+        ecrire_vtk_tous_les_n_pas=3,
+        afficher_console_tous_les_n_pas=2,
+        # Exemple de pas adaptes simples (plus denses au milieu de l'impact)
+        temps_relatifs=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.58, 0.66, 0.74, 0.82, 0.9, 1.0],
+    )
+    return config_etude_rivets(with_rivets=with_rivets, base=base)
+
+
+def config_etude_rivets_production(with_rivets: bool = True):
+    """
+    Preset plus propre pour comparaison finale:
+    - plus de pas
+    - ecriture VTK a chaque pas
+    - solveurs separes meca / phase-field
+    """
+    base = creer_config(
+        case_name="titanic_rivets_production",
+        num_steps=36,
+        ecrire_vtk_tous_les_n_pas=1,
+        afficher_console_tous_les_n_pas=3,
+        # Plus de points autour de la zone centrale de chargement
+        temps_relatifs=[
+            0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
+            0.50, 0.54, 0.58, 0.62, 0.66, 0.70, 0.74, 0.78, 0.82, 0.86,
+            0.90, 0.94, 0.97, 1.0
+        ],
+        # A ajuster selon votre machine / installation PETSc
+        mechanics_petsc_options={"ksp_type": "preonly", "pc_type": "lu"},
+        damage_petsc_options={"ksp_type": "preonly", "pc_type": "lu"},
+    )
+    return config_etude_rivets(with_rivets=with_rivets, base=base)
 
 
 def lire_maillage(mesh_stem: str, comm=MPI.COMM_WORLD):
