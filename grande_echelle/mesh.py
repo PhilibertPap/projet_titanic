@@ -1,5 +1,6 @@
 import gmsh
 import numpy as np
+from pathlib import Path
 
 
 filename = "mesh/coque"
@@ -327,7 +328,10 @@ def main():
 
     # 4) Generation / export du maillage surfacique
     gmsh.model.mesh.generate(2)
-    gmsh.write(filename + ".msh")
+    out_path = (Path(__file__).resolve().parent / f"{filename}.msh").resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    gmsh.write(str(out_path))
+    print(f"Maillage ecrit dans : {out_path}")
     gmsh.finalize()
 
 

@@ -10,6 +10,7 @@ import numpy as np
 import petsc4py.PETSc as PETSc
 import ufl
 from dolfinx import default_scalar_type, fem
+import dolfinx.fem.petsc
 from mpi4py import MPI
 
 
@@ -283,19 +284,19 @@ def lancer_calcul(cfg=None):
             iter_count += 1
             d_prev = d.x.array.copy()
 
-            A_u = fem.petsc.assemble_matrix(form_a_u, bcs=bcs_u)
+            A_u = dolfinx.fem.petsc.assemble_matrix(form_a_u, bcs=bcs_u)
             A_u.assemble()
-            b_u = fem.petsc.assemble_vector(form_L_u)
-            fem.petsc.apply_lifting(b_u, [form_a_u], [bcs_u])
+            b_u = dolfinx.fem.petsc.assemble_vector(form_L_u)
+            dolfinx.fem.petsc.apply_lifting(b_u, [form_a_u], [bcs_u])
             b_u.ghostUpdate(addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.REVERSE)
-            fem.petsc.set_bc(b_u, bcs_u)
+            dolfinx.fem.petsc.set_bc(b_u, bcs_u)
             solver_u.setOperators(A_u)
             solver_u.solve(b_u, u.x.petsc_vec)
             u.x.scatter_forward()
 
-            A_d = fem.petsc.assemble_matrix(form_a_d)
+            A_d = dolfinx.fem.petsc.assemble_matrix(form_a_d)
             A_d.assemble()
-            b_d = fem.petsc.assemble_vector(form_L_d)
+            b_d = dolfinx.fem.petsc.assemble_vector(form_L_d)
             b_d.ghostUpdate(addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.REVERSE)
             solver_d.setOperators(A_d)
             solver_d.solve(b_d, d.x.petsc_vec)
