@@ -23,7 +23,7 @@ Z_TOP = FREEBOARD_TO_DECK
 # - tapered bow/stern
 # - slight tumblehome toward upper deck (very mild)
 Y_KEEL = 0.0
-Y_BILGE_BASE = 11.4
+Y_BILGE_BASE = 12.2
 Y_WATERLINE_BASE = 13.9
 Y_DECK_BASE = 13.5
 Y_MIDSHIP_FULLNESS = 0.06
@@ -47,15 +47,15 @@ N_SECTION_PTS = 17
 
 # Iceberg trajectory (used only to define a mesh-refinement band)
 ICEBERG_CENTER_Y = -10.8    # m, starboard side (sign flipped)
-ICEBERG_CENTER_Z = -7.0     # m, below waterline (z=0)
+ICEBERG_CENTER_Z = -6.3     # m, below waterline (z=0)
 # Longitudinal contact/damage zone (order of magnitude ~300 ft ~ 91 m)
 ICEBERG_X_START = 177.0
 ICEBERG_X_END = 268.0
 
 # Mesh size field (refine around the iceberg trajectory band)
-SIZE_MIN = 0.35
+SIZE_MIN = 0.22
 SIZE_MAX = 3.00
-DIST_MIN = 1.2
+DIST_MIN = 0.8
 DIST_MAX = 6.5
 
 # Local refinement to resolve homogenized rivet bands represented as vertical
@@ -116,10 +116,10 @@ def hull_xyz(u: float, v: float) -> tuple[float, float, float]:
     # Piecewise smooth half-breadth profile from keel to deck
     # Lower bilge transition + sharper turn gives a more vertical flank over a
     # larger height before the hull rounds out.
-    s_bilge = 0.11
+    s_bilge = 0.08
     if s <= s_bilge:
         t = s / s_bilge
-        y_section = Y_KEEL + (y_bilge - Y_KEEL) * (t ** 1.70)
+        y_section = Y_KEEL + (y_bilge - Y_KEEL) * (t ** 1.45)
     elif s <= s_water:
         t = (s - s_bilge) / max(s_water - s_bilge, 1e-9)
         # Slightly convex flank-to-waterline transition (avoid visible concavity)

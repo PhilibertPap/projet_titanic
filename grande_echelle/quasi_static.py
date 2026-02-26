@@ -128,7 +128,14 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
     dx_max_par_pas = getattr(cfg, "iceberg_max_dx_par_pas_m", None)
     if dx_max_par_pas is not None and float(dx_max_par_pas) > 0.0:
         longueur_parcours = abs(x1 - x0)
-        n_intervalles_min = int(np.ceil(longueur_parcours / float(dx_max_par_pas))) if longueur_parcours > 0 else 1
+        contact_fraction = max(min(t_contact_duration / max(float(cfg.t_final), 1e-12), 1.0), 1e-12)
+        # The iceberg moves only during the contact window, so the total number
+        # of intervals must be increased accordingly to respect dx_max per step.
+        n_intervalles_min = (
+            int(np.ceil(longueur_parcours / (float(dx_max_par_pas) * contact_fraction)))
+            if longueur_parcours > 0
+            else 1
+        )
         n_intervalles = max(int(cfg.num_steps), n_intervalles_min)
         time_steps = np.linspace(0.0, cfg.t_final, n_intervalles + 1)
     elif temps_relatifs:
