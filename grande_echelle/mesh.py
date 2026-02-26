@@ -49,8 +49,8 @@ N_SECTION_PTS = 13
 ICEBERG_CENTER_Y = -10.8    # m, starboard side (sign flipped)
 ICEBERG_CENTER_Z = -7.5     # m, below waterline (z=0)
 # Longitudinal contact/damage zone (order of magnitude ~300 ft ~ 91 m)
-ICEBERG_X_START = 0.0
-ICEBERG_X_END = 92.0
+ICEBERG_X_START = 177.0
+ICEBERG_X_END = 268.0
 
 # Mesh size field (refine around the iceberg trajectory band)
 SIZE_MIN = 0.35
@@ -76,8 +76,7 @@ RIVET_STRIP_Z_MAX = 0.2
 RIVET_STRIP_SIZE_MIN = 0.12
 RIVET_STRIP_SIZE_MAX = 3.00
 RIVET_STRIP_MARGIN_X = 0.35
-RIVET_STRIP_MARGIN_Y = 0.5
-RIVET_STRIP_REFINE_HALF_WIDTH_Y = 1.2
+RIVET_STRIP_MARGIN_Y = 0.8
 
 
 def _smoothstep(a: float, b: float, x: float) -> float:
@@ -261,9 +260,13 @@ def _add_mesh_size_field(occ) -> None:
     # 3) Refinement around the 8 vertical homogenized rivet strips (same x-centers
     # as grande_echelle/main.py default bands) in the iceberg passage zone.
     rivet_band_boxes = []
-    # Keep rivet-band refinement tightly localized around the iceberg track.
-    y_min_rivet = ICEBERG_CENTER_Y - RIVET_STRIP_REFINE_HALF_WIDTH_Y - RIVET_STRIP_MARGIN_Y
-    y_max_rivet = ICEBERG_CENTER_Y + RIVET_STRIP_REFINE_HALF_WIDTH_Y + RIVET_STRIP_MARGIN_Y
+    # For vertical rivet strips, keep the x-window narrow but cover the whole
+    # side-shell width in y so the refinement is visible from top to bottom.
+    y_extent_rivet = 1.2 * max(
+        abs(Y_WATERLINE_BASE * (1.0 + Y_MIDSHIP_FULLNESS)),
+        abs(Y_DECK_BASE * (1.0 + Y_MIDSHIP_FULLNESS)),
+        abs(ICEBERG_CENTER_Y),
+    ) + RIVET_STRIP_MARGIN_Y
     x_margin = 0.5 * RIVET_STRIP_PHYSICAL_WIDTH_X
     x_centers = np.linspace(
         x_start + x_margin,
@@ -276,8 +279,8 @@ def _add_mesh_size_field(occ) -> None:
         field.setNumber(f_box, "VOut", RIVET_STRIP_SIZE_MAX)
         field.setNumber(f_box, "XMin", x_center - 0.5 * RIVET_STRIP_PHYSICAL_WIDTH_X - RIVET_STRIP_MARGIN_X)
         field.setNumber(f_box, "XMax", x_center + 0.5 * RIVET_STRIP_PHYSICAL_WIDTH_X + RIVET_STRIP_MARGIN_X)
-        field.setNumber(f_box, "YMin", min(y_min_rivet, y_max_rivet))
-        field.setNumber(f_box, "YMax", max(y_min_rivet, y_max_rivet))
+        field.setNumber(f_box, "YMin", -y_extent_rivet)
+        field.setNumber(f_box, "YMax", y_extent_rivet)
         field.setNumber(f_box, "ZMin", RIVET_STRIP_Z_MIN)
         field.setNumber(f_box, "ZMax", RIVET_STRIP_Z_MAX)
         rivet_band_boxes.append(f_box)

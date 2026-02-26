@@ -18,6 +18,98 @@ except ImportError:  # pragma: no cover - script execution fallback
     from quasi_static import run_quasi_static
 
 
+def _resolve_existing_path(path_like, *, suffix: str | None = None) -> Path | None:
+    candidat = Path(path_like)
+    candidates = [candidat] if candidat.is_absolute() else [Path.cwd() / candidat, Path(__file__).resolve().parent / candidat]
+    if suffix is not None:
+        candidates = [p.with_suffix(suffix) for p in candidates]
+    return next((p for p in candidates if p.exists()), None)
+
+
+def _candidate_paths(path_like, *, suffix: str | None = None) -> list[Path]:
+    candidat = Path(path_like)
+    candidates = [candidat] if candidat.is_absolute() else [Path.cwd() / candidat, Path(__file__).resolve().parent / candidat]
+    if suffix is not None:
+        candidates = [p.with_suffix(suffix) for p in candidates]
+    return candidates
+
+
+def _compat_config_defaults() -> dict:
+    return {
+        "utiliser_bandes_rivets_z": False,
+        "bandes_rivets_z": [],
+        "rivet_bandes_preset_file": None,
+        "iceberg_max_dx_par_pas_m": None,
+        "iceberg_contact_t_start": 0.0,
+        "write_local_frame_outputs": True,
+        "write_rotation_vtk": True,
+        "write_damage_vtk": True,
+        "write_damage_vtk_if_disabled": False,
+    }
+
+
+def _apply_compat_aliases(cfg) -> None:
+    alias_pairs = [
+        ("ecrire_vtk_tous_les_n_pas", "vtk_write_stride"),
+        ("afficher_console_tous_les_n_pas", "monitor_print_stride"),
+    ]
+    for new_name, old_name in alias_pairs:
+        if not hasattr(cfg, new_name) and hasattr(cfg, old_name):
+            setattr(cfg, new_name, getattr(cfg, old_name))
+
+
+def _apply_missing_defaults(cfg) -> None:
+    defaults = _compat_config_defaults()
+    for name, value in defaults.items():
+        if not hasattr(cfg, name):
+            setattr(cfg, name, value)
+    if not hasattr(cfg, "iceberg_contact_t_end"):
+        cfg.iceberg_contact_t_end = cfg.t_final
+
+
+def _validate_config_values(cfg) -> None:
+    checks = [
+        (cfg.num_steps > 0, "num_steps must be > 0"),
+        (cfg.t_final > 0.0, "t_final must be > 0"),
+        (cfg.ecrire_vtk_tous_les_n_pas > 0, "ecrire_vtk_tous_les_n_pas must be >= 1"),
+        (cfg.afficher_console_tous_les_n_pas > 0, "afficher_console_tous_les_n_pas must be >= 1"),
+        (
+            cfg.iceberg_loading in {"neumann_pressure", "dirichlet_displacement"},
+            "iceberg_loading must be 'neumann_pressure' or 'dirichlet_displacement'",
+        ),
+    ]
+    for ok, message in checks:
+        if not ok:
+            raise ValueError(message)
+
+
+def _build_output_layout(cfg) -> dict:
+    base_dir = Path(cfg.results_root) / cfg.case_name
+    local_frame_dir = base_dir / "local_frame"
+    quasi_static_dir = base_dir / "quasi_static"
+    local_frame_dir.mkdir(exist_ok=True, parents=True)
+    quasi_static_dir.mkdir(exist_ok=True, parents=True)
+    return {
+        "base_dir": base_dir,
+        "local_frame_dir": local_frame_dir,
+        "quasi_static_dir": quasi_static_dir,
+        "local_frame_file": local_frame_dir / "local_basis_vectors.pvd",
+        "displacement_file": quasi_static_dir / "displacement.pvd",
+        "rotation_file": quasi_static_dir / "rotation.pvd",
+        "damage_file": quasi_static_dir / "damage.pvd",
+        "monitor_file": quasi_static_dir / "monitor.csv",
+        "metadata_file": base_dir / "run_metadata.json",
+    }
+
+
+def _run_rivet_comparison(config_factory, label_suffix: str = ""):
+    suffix = f" {label_suffix}" if label_suffix else ""
+    print(f"=== Cas 1 : avec effet des rivets{suffix} ===")
+    lancer_calcul(config_factory(with_rivets=True))
+    print(f"=== Cas 2 : sans effet des rivets{suffix} ===")
+    lancer_calcul(config_factory(with_rivets=False))
+
+
 def config_par_defaut() -> dict:
     iceberg_zone_x_debut_m = 177.0
     iceberg_zone_x_fin_m = 268.0
@@ -134,10 +226,13 @@ def config_vers_dict(cfg) -> dict:
     data = dict(vars(cfg))
 
     # Compatibilite anciens noms
-    if "ecrire_vtk_tous_les_n_pas" not in data and "vtk_write_stride" in data:
-        data["ecrire_vtk_tous_les_n_pas"] = data["vtk_write_stride"]
-    if "afficher_console_tous_les_n_pas" not in data and "monitor_print_stride" in data:
-        data["afficher_console_tous_les_n_pas"] = data["monitor_print_stride"]
+    alias_pairs = [
+        ("ecrire_vtk_tous_les_n_pas", "vtk_write_stride"),
+        ("afficher_console_tous_les_n_pas", "monitor_print_stride"),
+    ]
+    for new_name, old_name in alias_pairs:
+        if new_name not in data and old_name in data:
+            data[new_name] = data[old_name]
 
     # Solveurs separes si non renseignes
     if data.get("mechanics_petsc_options") is None:
@@ -148,42 +243,9 @@ def config_vers_dict(cfg) -> dict:
 
 
 def verifier_config(cfg) -> None:
-    # Compatibilite si un ancien objet config est passe
-    if not hasattr(cfg, "ecrire_vtk_tous_les_n_pas") and hasattr(cfg, "vtk_write_stride"):
-        cfg.ecrire_vtk_tous_les_n_pas = cfg.vtk_write_stride
-    if not hasattr(cfg, "afficher_console_tous_les_n_pas") and hasattr(cfg, "monitor_print_stride"):
-        cfg.afficher_console_tous_les_n_pas = cfg.monitor_print_stride
-    if not hasattr(cfg, "utiliser_bandes_rivets_z"):
-        cfg.utiliser_bandes_rivets_z = False
-    if not hasattr(cfg, "bandes_rivets_z"):
-        cfg.bandes_rivets_z = []
-    if not hasattr(cfg, "rivet_bandes_preset_file"):
-        cfg.rivet_bandes_preset_file = None
-    if not hasattr(cfg, "iceberg_max_dx_par_pas_m"):
-        cfg.iceberg_max_dx_par_pas_m = None
-    if not hasattr(cfg, "iceberg_contact_t_start"):
-        cfg.iceberg_contact_t_start = 0.0
-    if not hasattr(cfg, "iceberg_contact_t_end"):
-        cfg.iceberg_contact_t_end = cfg.t_final
-    if not hasattr(cfg, "write_local_frame_outputs"):
-        cfg.write_local_frame_outputs = True
-    if not hasattr(cfg, "write_rotation_vtk"):
-        cfg.write_rotation_vtk = True
-    if not hasattr(cfg, "write_damage_vtk"):
-        cfg.write_damage_vtk = True
-    if not hasattr(cfg, "write_damage_vtk_if_disabled"):
-        cfg.write_damage_vtk_if_disabled = False
-
-    if cfg.num_steps <= 0:
-        raise ValueError("num_steps must be > 0")
-    if cfg.t_final <= 0.0:
-        raise ValueError("t_final must be > 0")
-    if cfg.ecrire_vtk_tous_les_n_pas <= 0:
-        raise ValueError("ecrire_vtk_tous_les_n_pas must be >= 1")
-    if cfg.afficher_console_tous_les_n_pas <= 0:
-        raise ValueError("afficher_console_tous_les_n_pas must be >= 1")
-    if cfg.iceberg_loading not in {"neumann_pressure", "dirichlet_displacement"}:
-        raise ValueError("iceberg_loading must be 'neumann_pressure' or 'dirichlet_displacement'")
+    _apply_compat_aliases(cfg)
+    _apply_missing_defaults(cfg)
+    _validate_config_values(cfg)
 
 
 DEFAULT_CONFIG = creer_config()
@@ -215,7 +277,7 @@ def config_etude_rivets(with_rivets: bool, base=None):
 
 def config_etude_rivets_rapide(with_rivets: bool = True):
     base = creer_config(
-        case_name="t1912_fast_contact_z3_riv8x",
+        case_name="rivets_rapide",
         num_steps=20,
         ecrire_vtk_tous_les_n_pas=1,
         afficher_console_tous_les_n_pas=2,
@@ -255,7 +317,7 @@ def config_etude_rivets_production(with_rivets: bool = True):
 def config_etude_rivets_screening(with_rivets: bool = True):
     """Preset rapide pour balayages: meme physique, moins de sorties et PF moins frequent."""
     base = creer_config(
-        case_name="t1912_scr_contact_z3_riv8x",
+        case_name="rivets_screening",
         num_steps=16,
         ecrire_vtk_tous_les_n_pas=4,
         afficher_console_tous_les_n_pas=4,
@@ -275,15 +337,8 @@ def _charger_bandes_rivets_preset_si_disponible(cfg) -> None:
     if not preset_file:
         return
 
-    candidat = Path(preset_file)
-    if candidat.is_absolute():
-        preset_candidates = [candidat]
-    else:
-        preset_candidates = [
-            Path.cwd() / candidat,
-            Path(__file__).resolve().parent / candidat,
-        ]
-    preset_path = next((p for p in preset_candidates if p.exists()), None)
+    preset_candidates = _candidate_paths(preset_file)
+    preset_path = _resolve_existing_path(preset_file)
     if preset_path is None:
         print(f"Rivet preset not found. Tried: {preset_candidates}")
         return
@@ -302,40 +357,19 @@ def _charger_bandes_rivets_preset_si_disponible(cfg) -> None:
 
 
 def lancer_comparaison_rivets_rapide():
-    print("=== Cas 1 : avec effet des rivets ===")
-    cfg_avec = config_etude_rivets_rapide(with_rivets=True)
-    lancer_calcul(cfg_avec)
-
-    print("=== Cas 2 : sans effet des rivets ===")
-    cfg_sans = config_etude_rivets_rapide(with_rivets=False)
-    lancer_calcul(cfg_sans)
-
+    _run_rivet_comparison(config_etude_rivets_rapide)
     print("Comparaison terminee.")
     print("Comparer les fichiers monitor.csv et les champs de dommage dans results/.")
 
 
 def lancer_comparaison_rivets_production():
-    print("=== Cas 1 : avec effet des rivets ===")
-    cfg_avec = config_etude_rivets_production(with_rivets=True)
-    lancer_calcul(cfg_avec)
-
-    print("=== Cas 2 : sans effet des rivets ===")
-    cfg_sans = config_etude_rivets_production(with_rivets=False)
-    lancer_calcul(cfg_sans)
-
+    _run_rivet_comparison(config_etude_rivets_production)
     print("Comparaison terminee.")
     print("Comparer les fichiers monitor.csv et les champs de dommage dans results/.")
 
 
 def lancer_comparaison_rivets_screening():
-    print("=== Cas 1 : avec effet des rivets (screening) ===")
-    cfg_avec = config_etude_rivets_screening(with_rivets=True)
-    lancer_calcul(cfg_avec)
-
-    print("=== Cas 2 : sans effet des rivets (screening) ===")
-    cfg_sans = config_etude_rivets_screening(with_rivets=False)
-    lancer_calcul(cfg_sans)
-
+    _run_rivet_comparison(config_etude_rivets_screening, label_suffix="(screening)")
     print("Comparaison screening terminee.")
     print("Regarder d'abord monitor.csv, puis relancer en mode rapide/production si besoin.")
 
@@ -384,15 +418,8 @@ def lancer_calcul(cfg=None):
     # ------------------------------------------------------------
     # 1) Lecture du maillage
     # ------------------------------------------------------------
-    candidat = Path(cfg.mesh_stem)
-    if candidat.is_absolute():
-        mesh_candidates = [candidat.with_suffix(".msh")]
-    else:
-        mesh_candidates = [
-            (Path.cwd() / candidat).with_suffix(".msh"),
-            (Path(__file__).resolve().parent / candidat).with_suffix(".msh"),
-        ]
-    mesh_path = next((p for p in mesh_candidates if p.exists()), None)
+    mesh_candidates = _candidate_paths(cfg.mesh_stem, suffix=".msh")
+    mesh_path = _resolve_existing_path(cfg.mesh_stem, suffix=".msh")
     if mesh_path is None:
         raise FileNotFoundError(
             f"Mesh file not found. Tried: {', '.join(str(p) for p in mesh_candidates)}"
@@ -412,36 +439,14 @@ def lancer_calcul(cfg=None):
     # ------------------------------------------------------------
     # 2) Dossiers de sortie
     # ------------------------------------------------------------
-    base_dir = Path(cfg.results_root) / cfg.case_name
-    local_frame_dir = base_dir / "local_frame"
-    quasi_static_dir = base_dir / "quasi_static"
-    local_frame_dir.mkdir(exist_ok=True, parents=True)
-    quasi_static_dir.mkdir(exist_ok=True, parents=True)
-
-    output_layout = {
-        "base_dir": base_dir,
-        "local_frame_dir": local_frame_dir,
-        "quasi_static_dir": quasi_static_dir,
-        "local_frame_file": local_frame_dir / "local_basis_vectors.pvd",
-        "displacement_file": quasi_static_dir / "displacement.pvd",
-        "rotation_file": quasi_static_dir / "rotation.pvd",
-        "damage_file": quasi_static_dir / "damage.pvd",
-        "monitor_file": quasi_static_dir / "monitor.csv",
-        "metadata_file": base_dir / "run_metadata.json",
-    }
+    output_layout = _build_output_layout(cfg)
+    local_frame_dir = output_layout["local_frame_dir"]
 
     # ------------------------------------------------------------
     # 3) Preset phase-field (optionnel)
     # ------------------------------------------------------------
-    preset_cfg_path = Path(cfg.phase_field_preset_file)
-    if preset_cfg_path.is_absolute():
-        preset_candidates = [preset_cfg_path]
-    else:
-        preset_candidates = [
-            Path.cwd() / preset_cfg_path,
-            Path(__file__).resolve().parent / preset_cfg_path,
-        ]
-    preset_path = next((p for p in preset_candidates if p.exists()), None)
+    preset_candidates = _candidate_paths(cfg.phase_field_preset_file)
+    preset_path = _resolve_existing_path(cfg.phase_field_preset_file)
     if preset_path is None:
         phase_field_preset = None
         print(f"Phase-field preset not found. Tried: {preset_candidates}")

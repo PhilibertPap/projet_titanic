@@ -1,10 +1,29 @@
-import numpy as np
-from time import perf_counter
+from dataclasses import dataclass
 from contextlib import nullcontext
+from time import perf_counter
+
+import numpy as np
 from mpi4py import MPI
 import ufl
 from dolfinx import fem, io
 import dolfinx.fem.petsc
+
+try:
+    from .phase_field_solver import (
+        PhaseFieldContext,
+        StepStats,
+        build_phase_field_context,
+        phase_field_irreversibility_mode,
+        advance_quasi_static_step,
+    )
+except ImportError:  # pragma: no cover - script execution fallback
+    from phase_field_solver import (
+        PhaseFieldContext,
+        StepStats,
+        build_phase_field_context,
+        phase_field_irreversibility_mode,
+        advance_quasi_static_step,
+    )
 
 
 def moving_gaussian_pressure(domain, c0, v_ice, t, sigma, p0):
@@ -27,338 +46,327 @@ def _write_monitor_csv(path, rows):
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
-    domain = model.domain
-    t = fem.Constant(domain, 0.0)
-    zero_vec = fem.Constant(domain, (0.0, 0.0, 0.0))
+@dataclass
+class ContactKinematics:
+    x0: float
+    x1: float
+    y_mid: float
+    z_mid: float
+    t_start: float
+    t_end: float
+    duration: float
+    ramp_amplitude: bool
 
-    # ------------------------------------------------------------
-    # 1) Parametres geometriques utiles pour definir la zone d'impact
-    # ------------------------------------------------------------
+    def progress(self, tn: float) -> float:
+        if tn <= self.t_start:
+            return 0.0
+        if tn >= self.t_end:
+            return 1.0
+        return (tn - self.t_start) / self.duration
 
+    def active(self, tn: float) -> bool:
+        return self.t_start <= tn <= self.t_end
+
+    def ramp(self, tn: float) -> float:
+        active = self.active(tn)
+        if not active:
+            return 0.0
+        return self.progress(tn) if self.ramp_amplitude else 1.0
+
+
+@dataclass
+class LoadController:
+    L: any
+    extra_bcs: list
+    update: any
+
+
+@dataclass
+class OutputControls:
+    vtk_stride: int
+    write_rotation: bool
+    write_damage: bool
+    print_stride: int
+
+
+def _domain_bounds(domain):
     comm = domain.comm
-    xmin = comm.allreduce(domain.geometry.x[:, 0].min(), op=MPI.MIN)
-    xmax = comm.allreduce(domain.geometry.x[:, 0].max(), op=MPI.MAX)
-    ymin = comm.allreduce(domain.geometry.x[:, 1].min(), op=MPI.MIN)
-    ymax = comm.allreduce(domain.geometry.x[:, 1].max(), op=MPI.MAX)
-    zmin = comm.allreduce(domain.geometry.x[:, 2].min(), op=MPI.MIN)
-    zmax = comm.allreduce(domain.geometry.x[:, 2].max(), op=MPI.MAX)
+    return {
+        "xmin": comm.allreduce(domain.geometry.x[:, 0].min(), op=MPI.MIN),
+        "xmax": comm.allreduce(domain.geometry.x[:, 0].max(), op=MPI.MAX),
+        "ymin": comm.allreduce(domain.geometry.x[:, 1].min(), op=MPI.MIN),
+        "ymax": comm.allreduce(domain.geometry.x[:, 1].max(), op=MPI.MAX),
+        "zmin": comm.allreduce(domain.geometry.x[:, 2].min(), op=MPI.MIN),
+        "zmax": comm.allreduce(domain.geometry.x[:, 2].max(), op=MPI.MAX),
+    }
+
+
+def _build_contact_kinematics(domain, cfg) -> ContactKinematics:
+    bounds = _domain_bounds(domain)
+    xmin = bounds["xmin"]
+    xmax = bounds["xmax"]
+    ymin = bounds["ymin"]
+    ymax = bounds["ymax"]
+    zmin = bounds["zmin"]
+    zmax = bounds["zmax"]
 
     iceberg_center_y = getattr(cfg, "iceberg_center_y", None)
-    if iceberg_center_y is not None:
-        y_mid = float(np.clip(iceberg_center_y, ymin, ymax))
-    else:
-        y_mid = cfg.y_mid_factor * ymax
+    y_mid = float(np.clip(iceberg_center_y, ymin, ymax)) if iceberg_center_y is not None else cfg.y_mid_factor * ymax
+
     if hasattr(cfg, "waterline_z") and hasattr(cfg, "iceberg_depth_below_waterline"):
         z_target = cfg.waterline_z - cfg.iceberg_depth_below_waterline
         z_mid = float(np.clip(z_target, zmin, zmax))
     else:
         z_mid = zmin + cfg.z_mid_factor * (zmax - zmin)
 
-    x_zone_debut = float(getattr(cfg, "iceberg_zone_x_debut_m", xmin))
-    x_zone_fin = float(getattr(cfg, "iceberg_zone_x_fin_m", xmax))
-    x_zone_debut = float(np.clip(x_zone_debut, xmin, xmax))
-    x_zone_fin = float(np.clip(x_zone_fin, xmin, xmax))
-    if x_zone_fin < x_zone_debut:
-        x_zone_debut, x_zone_fin = x_zone_fin, x_zone_debut
+    x_zone_debut = float(np.clip(getattr(cfg, "iceberg_zone_x_debut_m", xmin), xmin, xmax))
+    x_zone_fin = float(np.clip(getattr(cfg, "iceberg_zone_x_fin_m", xmax), xmin, xmax))
+    x_start, x_end = sorted((x_zone_debut, x_zone_fin))
+    x0, x1 = (x_end, x_start) if getattr(cfg, "iceberg_moves_from_xmax_to_xmin", False) else (x_start, x_end)
 
-    if getattr(cfg, "iceberg_moves_from_xmax_to_xmin", False):
-        # Mouvement "vers l'avant" du patch numerique dans la zone definie
-        x0 = x_zone_fin
-        x1 = x_zone_debut
-    else:
-        x0 = x_zone_debut
-        x1 = x_zone_fin
-    vx = (x1 - x0) / cfg.t_final
-    contact_t_start = float(getattr(cfg, "iceberg_contact_t_start", 0.0))
-    contact_t_end = float(getattr(cfg, "iceberg_contact_t_end", cfg.t_final))
-    contact_t_start = float(np.clip(contact_t_start, 0.0, cfg.t_final))
-    contact_t_end = float(np.clip(contact_t_end, contact_t_start, cfg.t_final))
-    contact_duration = max(contact_t_end - contact_t_start, 1e-12)
+    t_start = float(np.clip(getattr(cfg, "iceberg_contact_t_start", 0.0), 0.0, cfg.t_final))
+    t_end = float(np.clip(getattr(cfg, "iceberg_contact_t_end", cfg.t_final), t_start, cfg.t_final))
+    duration = max(t_end - t_start, 1e-12)
 
-    # The iceberg patch moves only during the contact window [t_start, t_end].
-    # This avoids loading the shell during non-contact stages.
-    c0 = fem.Constant(domain, (x0, y_mid, z_mid))
-    v_ice = fem.Constant(domain, ((x1 - x0) / contact_duration, 0.0, 0.0))
-    sigma = fem.Constant(domain, cfg.sigma)
-    p0 = fem.Constant(domain, 0.0 if getattr(cfg, "ramp_amplitude_iceberg", False) else cfg.pressure_peak)
+    return ContactKinematics(
+        x0=x0,
+        x1=x1,
+        y_mid=y_mid,
+        z_mid=z_mid,
+        t_start=t_start,
+        t_end=t_end,
+        duration=duration,
+        ramp_amplitude=bool(getattr(cfg, "ramp_amplitude_iceberg", False)),
+    )
 
-    # ------------------------------------------------------------
-    # 2) Chargement externe (pression ou deplacement impose)
-    # ------------------------------------------------------------
-    # Par defaut: pas de force volumique/surfacique (cas pilotage Dirichlet).
+
+def _build_time_steps(cfg, contact: ContactKinematics):
+    temps_relatifs = getattr(cfg, "temps_relatifs", None)
+    dx_max_par_pas = getattr(cfg, "iceberg_max_dx_par_pas_m", None)
+    if dx_max_par_pas is not None and float(dx_max_par_pas) > 0.0:
+        longueur_parcours = abs(contact.x1 - contact.x0)
+        n_intervalles_min = int(np.ceil(longueur_parcours / float(dx_max_par_pas))) if longueur_parcours > 0 else 1
+        n_intervalles = max(int(cfg.num_steps), n_intervalles_min)
+        return np.linspace(0.0, cfg.t_final, n_intervalles + 1)
+    if temps_relatifs:
+        return cfg.t_final * np.array(temps_relatifs, dtype=float)
+    return np.linspace(0.0, cfg.t_final, cfg.num_steps + 1)
+
+
+def _make_neumann_pressure_loading(model, cfg, t, contact: ContactKinematics) -> LoadController:
+    domain = model.domain
+    zero_vec = fem.Constant(domain, (0.0, 0.0, 0.0))
+    sigma = fem.Constant(domain, float(cfg.sigma))
+    p0 = fem.Constant(domain, 0.0 if contact.ramp_amplitude else cfg.pressure_peak)
+    c0 = fem.Constant(domain, (contact.x0, contact.y_mid, contact.z_mid))
+    v_ice = fem.Constant(domain, ((contact.x1 - contact.x0) / contact.duration, 0.0, 0.0))
+    p = moving_gaussian_pressure(domain, c0, v_ice, t, sigma, p0)
+    f_ice = p * model.e3
+    L = ufl.dot(f_ice, model.u_test) * ufl.dx
+
+    def update(tn: float):
+        p0.value = cfg.pressure_peak * contact.ramp(tn)
+
+    return LoadController(L=L, extra_bcs=[], update=update)
+
+
+def _make_dirichlet_normal_loading(model, cfg, t, contact: ContactKinematics) -> LoadController:
+    domain = model.domain
+    zero_vec = fem.Constant(domain, (0.0, 0.0, 0.0))
     L = ufl.dot(zero_vec, model.u_test) * ufl.dx
-    extra_bcs = []
-    if cfg.iceberg_loading == "neumann_pressure":
-        p = moving_gaussian_pressure(domain, c0, v_ice, t, sigma, p0)
-        # Positive sign chosen so the pressure pushes the shell inward for the
-        # current hull orientation (the previous sign was pulling it outward).
-        f_ice = p * model.e3
-        L = ufl.dot(f_ice, model.u_test) * ufl.dx
-    elif cfg.iceberg_loading == "dirichlet_displacement":
-        radius_y = cfg.iceberg_patch_radius_factor * cfg.sigma
-        radius_z = cfg.iceberg_patch_radius_factor * cfg.sigma
-        waterline_z = getattr(cfg, "waterline_z", np.inf)
 
-        def impact_region(x):
-            y_scaled = (x[1] - y_mid) / max(radius_y, 1e-12)
-            z_scaled = (x[2] - z_mid) / max(radius_z, 1e-12)
-            inside_patch = (y_scaled * y_scaled + z_scaled * z_scaled) <= 1.0
-            submerged = x[2] <= waterline_z
-            return inside_patch & submerged
+    radius_y = cfg.iceberg_patch_radius_factor * cfg.sigma
+    radius_z = cfg.iceberg_patch_radius_factor * cfg.sigma
+    waterline_z = getattr(cfg, "waterline_z", np.inf)
 
-        ice_dofs = fem.locate_dofs_geometrical((model.V.sub(0), model.Vu), impact_region)
-        u_ice = fem.Function(model.Vu, name="IcebergDisplacement")
-        extra_bcs.append(fem.dirichletbc(u_ice, ice_dofs, model.V.sub(0)))
-    else:
+    def impact_region(x):
+        y_scaled = (x[1] - contact.y_mid) / max(radius_y, 1e-12)
+        z_scaled = (x[2] - contact.z_mid) / max(radius_z, 1e-12)
+        inside_patch = (y_scaled * y_scaled + z_scaled * z_scaled) <= 1.0
+        submerged = x[2] <= waterline_z
+        return inside_patch & submerged
+
+    ice_dofs = fem.locate_dofs_geometrical((model.V.sub(0), model.Vu), impact_region)
+    u_ice = fem.Function(model.Vu, name="IcebergDisplacement")
+    extra_bcs = [fem.dirichletbc(u_ice, ice_dofs, model.V.sub(0))]
+
+    sigma = fem.Constant(domain, float(cfg.sigma))
+    x_center = fem.Constant(domain, float(contact.x0))
+    disp_scale = fem.Constant(domain, 0.0)
+    x = ufl.SpatialCoordinate(domain)
+    r2 = (x[0] - x_center) ** 2 + (x[2] - contact.z_mid) ** 2
+    disp_amp = disp_scale * ufl.exp(-r2 / (2 * sigma**2))
+    u_ice_expr = disp_amp * model.e3
+    u_ice_eval = fem.Expression(u_ice_expr, model.Vu.element.interpolation_points)
+
+    def update(tn: float):
+        progress = contact.progress(tn)
+        x_center.value = contact.x0 + (contact.x1 - contact.x0) * progress
+        disp_scale.value = contact.ramp(tn) * cfg.iceberg_disp_sign * cfg.iceberg_disp_peak
+        u_ice.interpolate(u_ice_eval)
+
+    return LoadController(L=L, extra_bcs=extra_bcs, update=update)
+
+
+def _build_load_controller(model, cfg, t, contact: ContactKinematics) -> LoadController:
+    builders = {
+        "neumann_pressure": _make_neumann_pressure_loading,
+        "dirichlet_displacement": _make_dirichlet_normal_loading,
+    }
+    try:
+        return builders[cfg.iceberg_loading](model, cfg, t, contact)
+    except KeyError as exc:
         raise ValueError(
             f"Unknown cfg.iceberg_loading='{cfg.iceberg_loading}'. "
             "Expected 'neumann_pressure' or 'dirichlet_displacement'."
+        ) from exc
+
+
+def _build_output_controls(cfg, pf: PhaseFieldContext) -> OutputControls:
+    vtk_stride = int(getattr(cfg, "ecrire_vtk_tous_les_n_pas", getattr(cfg, "vtk_write_stride", 1)))
+    write_rotation = bool(getattr(cfg, "write_rotation_vtk", True))
+    write_damage = bool(getattr(cfg, "write_damage_vtk", True))
+    if not pf.enabled and not bool(getattr(cfg, "write_damage_vtk_if_disabled", False)):
+        write_damage = False
+    print_stride = int(getattr(cfg, "afficher_console_tous_les_n_pas", getattr(cfg, "monitor_print_stride", 1)))
+    return OutputControls(
+        vtk_stride=vtk_stride,
+        write_rotation=write_rotation,
+        write_damage=write_damage,
+        print_stride=print_stride,
+    )
+
+
+def _write_step_outputs(disp_vtk, rot_vtk, damage_vtk, controls: OutputControls, u_out, theta_out, damage, n, tn, n_last):
+    if not ((n % controls.vtk_stride == 0) or (n == n_last)):
+        return
+    disp_vtk.write_function(u_out, tn)
+    if rot_vtk is not None:
+        rot_vtk.write_function(theta_out, tn)
+    if damage_vtk is not None:
+        damage_vtk.write_function(damage, tn)
+
+
+def _append_monitor_row(monitor_rows, n, tn, u_out, damage, step_wall_s, stats: StepStats):
+    u_max = np.linalg.norm(u_out.x.array, ord=np.inf)
+    max_d = float(np.max(damage.x.array))
+    mean_d = float(np.mean(damage.x.array))
+    frac_d95 = float(np.mean(damage.x.array >= 0.95))
+    monitor_rows.append(
+        (
+            n,
+            tn,
+            u_max,
+            max_d,
+            mean_d,
+            frac_d95,
+            step_wall_s,
+            stats.mech_wall_s,
+            stats.damage_wall_s,
         )
+    )
+    return u_max, max_d, mean_d, frac_d95
 
-    def _contact_progress(tn: float) -> float:
-        if tn <= contact_t_start:
-            return 0.0
-        if tn >= contact_t_end:
-            return 1.0
-        return (tn - contact_t_start) / contact_duration
 
-    def _contact_active(tn: float) -> bool:
-        return contact_t_start <= tn <= contact_t_end
+def _print_monitor_line(cfg, controls: OutputControls, n, n_last, tn, u_max, max_d, mean_d, frac_d95, step_wall_s, stats):
+    if MPI.COMM_WORLD.rank != 0:
+        return
+    if not ((n % controls.print_stride == 0) or (n == n_last)):
+        return
+    print(
+        f"Step {n}/{n_last}, t={tn:.3e}, "
+        f"max|u|={u_max:.3e}, max(d)={max_d:.3e}, "
+        f"mean(d)={mean_d:.3e}, frac(d>=0.95)={frac_d95:.3e}, "
+        f"temps_pas={step_wall_s:.2f}s (meca={stats.mech_wall_s:.2f}s, "
+        f"phase_field={stats.damage_wall_s:.2f}s)"
+    )
 
-    # Probleme lineaire mecanique (deplacement/rotation de coque)
+
+def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
+    domain = model.domain
+    t = fem.Constant(domain, 0.0)
+
+    # 1) Contact/chargement iceberg (geometrie + cinematique)
+    contact = _build_contact_kinematics(domain, cfg)
+    load = _build_load_controller(model, cfg, t, contact)
+
+    # 2) Probleme mecanique (coque degradee par `model.damage_state`)
     mechanics_petsc_options = cfg.mechanics_petsc_options or cfg.petsc_options
     problem_u = dolfinx.fem.petsc.LinearProblem(
         model.a,
-        L,
+        load.L,
         u=model.v,
-        bcs=model.bcs + extra_bcs,
+        bcs=model.bcs + load.extra_bcs,
         petsc_options=mechanics_petsc_options,
         petsc_options_prefix="coque",
     )
 
-    # ------------------------------------------------------------
-    # 3) Variables de sortie / dommage global (phase-field)
-    # ------------------------------------------------------------
+    # 3) Variables de sortie + phase-field global
     u_out = fem.Function(model.Vu, name="Displacement")
     theta_out = fem.Function(model.Vtheta, name="Rotation")
-    Vd = model.Vd
-    damage = model.damage_state
-    damage.name = "Damage"
-    damage_old = fem.Function(Vd, name="DamageOld")
-    history = fem.Function(Vd, name="HistoryField")
-    damage.x.array[:] = 0.0
-    damage_old.x.array[:] = 0.0
-    history.x.array[:] = 0.0
+    pf = build_phase_field_context(model, cfg, phase_field_preset)
+    controls = _build_output_controls(cfg, pf)
 
-    damage_enabled = bool(cfg.enable_global_phase_field)
-    if damage_enabled:
-        gc_value = cfg.phase_field_gc_j_m2
-        l0_value = cfg.phase_field_l0_m
-        if cfg.phase_field_use_selected_preset and phase_field_preset:
-            gc_value = float(phase_field_preset.get("Gc_J_m2", gc_value))
-            l0_value = float(phase_field_preset.get("l0_m", l0_value))
+    if MPI.COMM_WORLD.rank == 0 and pf.enabled:
+        print(f"[phase-field] irreversibilite: {phase_field_irreversibility_mode(pf)}")
 
-        gc = fem.Function(model.gc_factor_field.function_space, name="GcField")
-        gc.x.array[:] = gc_value * model.gc_factor_field.x.array
-        l0 = fem.Constant(domain, l0_value)
-        residual_stiffness = fem.Constant(domain, cfg.phase_field_residual_stiffness)
-
-        u_sol, _ = ufl.split(model.v)
-        P_plane = ufl.as_matrix(
-            [
-                [model.e1[0], model.e2[0]],
-                [model.e1[1], model.e2[1]],
-                [model.e1[2], model.e2[2]],
-            ]
-        )
-        t_grad_u = ufl.dot(ufl.grad(u_sol), P_plane)
-        eps = ufl.sym(ufl.dot(P_plane.T, t_grad_u))
-        lmbda = model.E_field * model.nu_field / (1 + model.nu_field) / (1 - 2 * model.nu_field)
-        mu = model.E_field / 2 / (1 + model.nu_field)
-        lmbda_ps = 2 * lmbda * mu / (lmbda + 2 * mu)
-        if getattr(cfg, "phase_field_split_traction_compression", False):
-            tr_eps = ufl.tr(eps)
-            dev_eps = eps - (ufl.tr(eps) / 2.0) * ufl.Identity(2)
-            tr_eps_pos = 0.5 * (tr_eps + ufl.sqrt(tr_eps * tr_eps))
-            psi_drive_expr = 0.5 * lmbda_ps * tr_eps_pos ** 2 + mu * ufl.inner(dev_eps, dev_eps)
-        else:
-            psi_drive_expr = 0.5 * lmbda_ps * ufl.tr(eps) ** 2 + mu * ufl.inner(eps, eps)
-        psi_drive = fem.Function(Vd, name="PsiDrive")
-        psi_eval = fem.Expression(psi_drive_expr, Vd.element.interpolation_points)
-
-        dd = ufl.TrialFunction(Vd)
-        eta = ufl.TestFunction(Vd)
-        a_d = (
-            gc * l0 * ufl.dot(ufl.grad(dd), ufl.grad(eta))
-            + (gc / l0 + 2.0 * history + residual_stiffness) * dd * eta
-        ) * ufl.dx
-        L_d = (2.0 * history) * eta * ufl.dx
-        # Probleme lineaire phase-field global (dommage)
-        problem_d = dolfinx.fem.petsc.LinearProblem(
-            a_d,
-            L_d,
-            u=damage,
-            bcs=[],
-            petsc_options_prefix="coque_damage",
-            petsc_options=cfg.damage_petsc_options or cfg.petsc_options,
-        )
-    else:
-        psi_drive = None
-        psi_eval = None
-        problem_d = None
-
-    # ------------------------------------------------------------
-    # 4) Discretisation en temps + sorties
-    # ------------------------------------------------------------
-    temps_relatifs = getattr(cfg, "temps_relatifs", None)
-    dx_max_par_pas = getattr(cfg, "iceberg_max_dx_par_pas_m", None)
-    if dx_max_par_pas is not None and float(dx_max_par_pas) > 0.0:
-        longueur_parcours = abs(x1 - x0)
-        n_intervalles_min = int(np.ceil(longueur_parcours / float(dx_max_par_pas))) if longueur_parcours > 0 else 1
-        n_intervalles = max(int(cfg.num_steps), n_intervalles_min)
-        time_steps = np.linspace(0.0, cfg.t_final, n_intervalles + 1)
-    elif temps_relatifs:
-        time_steps = cfg.t_final * np.array(temps_relatifs, dtype=float)
-    else:
-        time_steps = np.linspace(0.0, cfg.t_final, cfg.num_steps + 1)
-
-    ecrire_vtk_tous_les_n_pas = int(
-        getattr(
-            cfg,
-            "ecrire_vtk_tous_les_n_pas",
-            getattr(cfg, "vtk_write_stride", 1),
-        )
-    )
-    write_rotation_vtk = bool(getattr(cfg, "write_rotation_vtk", True))
-    write_damage_vtk = bool(getattr(cfg, "write_damage_vtk", True))
-    if not damage_enabled and not bool(getattr(cfg, "write_damage_vtk_if_disabled", False)):
-        write_damage_vtk = False
-
-    ramp_amplitude_iceberg = bool(getattr(cfg, "ramp_amplitude_iceberg", False))
-    maj_damage_stride = max(
-        1,
-        int(getattr(cfg, "phase_field_mise_a_jour_tous_les_n_pas", 1)),
-    )
-    phase_field_seuil = float(getattr(cfg, "phase_field_seuil_nucleation_j_m3", 0.0))
-
-    afficher_console_tous_les_n_pas = int(
-        getattr(
-            cfg,
-            "afficher_console_tous_les_n_pas",
-            getattr(cfg, "monitor_print_stride", 1),
-        )
-    )
+    # 4) Temps + sorties
+    time_steps = _build_time_steps(cfg, contact)
     monitor_rows = []
+    n_last = len(time_steps) - 1
 
-    rot_ctx = (
-        io.VTKFile(MPI.COMM_WORLD, output_layout["rotation_file"], "w")
-        if write_rotation_vtk
-        else nullcontext(None)
-    )
-    dmg_ctx = (
-        io.VTKFile(MPI.COMM_WORLD, output_layout["damage_file"], "w")
-        if write_damage_vtk
-        else nullcontext(None)
-    )
+    rot_ctx = io.VTKFile(MPI.COMM_WORLD, output_layout["rotation_file"], "w") if controls.write_rotation else nullcontext(None)
+    dmg_ctx = io.VTKFile(MPI.COMM_WORLD, output_layout["damage_file"], "w") if controls.write_damage else nullcontext(None)
+
     with io.VTKFile(MPI.COMM_WORLD, output_layout["displacement_file"], "w") as disp_vtk:
         with rot_ctx as rot_vtk:
             with dmg_ctx as damage_vtk:
-                # ------------------------------------------------------------
-                # 5) Boucle en temps quasi-statique
-                # ------------------------------------------------------------
+                # 5) Boucle en temps quasi-statique (lecture lineaire, style TD)
                 for n, tn in enumerate(time_steps):
                     step_t0 = perf_counter()
-                    mech_wall_s = 0.0
-                    damage_wall_s = 0.0
                     t.value = tn
-                    in_contact = _contact_active(float(tn))
-                    contact_progress = _contact_progress(float(tn))
-                    facteur_rampe = 1.0 if in_contact else 0.0
-                    if ramp_amplitude_iceberg:
-                        facteur_rampe = contact_progress if in_contact else 0.0
-                    if cfg.iceberg_loading == "neumann_pressure":
-                        p0.value = cfg.pressure_peak * facteur_rampe
-                    if cfg.iceberg_loading == "dirichlet_displacement":
-                        x_center = x0 + (x1 - x0) * contact_progress
+                    load.update(float(tn))
 
-                        def prescribed_displacement(x):
-                            r2 = (x[0] - x_center) ** 2 + (x[2] - z_mid) ** 2
-                            amplitude = (
-                                facteur_rampe
-                                * cfg.iceberg_disp_sign
-                                * cfg.iceberg_disp_peak
-                                * np.exp(
-                                -r2 / (2 * cfg.sigma**2)
-                                )
-                            )
-                            return np.vstack(
-                                (np.zeros_like(amplitude), amplitude, np.zeros_like(amplitude))
-                            )
+                    stats = advance_quasi_static_step(problem_u, pf, n, len(time_steps))
 
-                        u_ice.interpolate(prescribed_displacement)
-                    # Mechanical solve uses damage from the previous converged load step
-                    # through `model.damage_state` embedded in the shell bilinear form.
-                    mech_t0 = perf_counter()
-                    problem_u.solve()
-                    mech_wall_s = perf_counter() - mech_t0
                     u_out.interpolate(model.v.sub(0))
                     theta_out.interpolate(model.v.sub(1))
-
-                    if damage_enabled:
-                        damage_t0 = perf_counter()
-                        psi_drive.interpolate(psi_eval)
-                        psi_effective = np.maximum(psi_drive.x.array - phase_field_seuil, 0.0)
-                        history.x.array[:] = np.maximum(history.x.array, psi_effective)
-
-                        if (n % maj_damage_stride == 0) or (n == len(time_steps) - 1):
-                            problem_d.solve()
-                            d_clipped = np.clip(damage.x.array, 0.0, 1.0)
-                            d_irrev = np.maximum(damage_old.x.array, d_clipped)
-                            damage.x.array[:] = d_irrev
-                            damage_old.x.array[:] = d_irrev
-                        else:
-                            damage.x.array[:] = damage_old.x.array
-                        damage_wall_s = perf_counter() - damage_t0
-                    else:
-                        damage.x.array[:] = 0.0
-
-                    if (n % ecrire_vtk_tous_les_n_pas == 0) or (n == len(time_steps) - 1):
-                        disp_vtk.write_function(u_out, tn)
-                        if rot_vtk is not None:
-                            rot_vtk.write_function(theta_out, tn)
-                        if damage_vtk is not None:
-                            damage_vtk.write_function(damage, tn)
-
-                    u_max = np.linalg.norm(u_out.x.array, ord=np.inf)
-                    max_d = float(np.max(damage.x.array))
-                    mean_d = float(np.mean(damage.x.array))
-                    frac_d95 = float(np.mean(damage.x.array >= 0.95))
-                    step_wall_s = perf_counter() - step_t0
-                    monitor_rows.append(
-                        (
-                            n,
-                            tn,
-                            u_max,
-                            max_d,
-                            mean_d,
-                            frac_d95,
-                            step_wall_s,
-                            mech_wall_s,
-                            damage_wall_s,
-                        )
+                    _write_step_outputs(
+                        disp_vtk,
+                        rot_vtk,
+                        damage_vtk,
+                        controls,
+                        u_out,
+                        theta_out,
+                        pf.damage,
+                        n,
+                        tn,
+                        n_last,
                     )
-                    if MPI.COMM_WORLD.rank == 0 and (
-                        n % afficher_console_tous_les_n_pas == 0
-                        or n == len(time_steps) - 1
-                    ):
-                        print(
-                            f"Step {n}/{len(time_steps)-1}, t={tn:.3e}, "
-                            f"max|u|={u_max:.3e}, max(d)={max_d:.3e}, "
-                            f"mean(d)={mean_d:.3e}, frac(d>=0.95)={frac_d95:.3e}, "
-                            f"temps_pas={step_wall_s:.2f}s (meca={mech_wall_s:.2f}s, "
-                            f"phase_field={damage_wall_s:.2f}s)"
-                        )
+
+                    step_wall_s = perf_counter() - step_t0
+                    u_max, max_d, mean_d, frac_d95 = _append_monitor_row(
+                        monitor_rows,
+                        n,
+                        tn,
+                        u_out,
+                        pf.damage,
+                        step_wall_s,
+                        stats,
+                    )
+                    _print_monitor_line(
+                        cfg,
+                        controls,
+                        n,
+                        n_last,
+                        tn,
+                        u_max,
+                        max_d,
+                        mean_d,
+                        frac_d95,
+                        step_wall_s,
+                        stats,
+                    )
 
     if MPI.COMM_WORLD.rank == 0:
         _write_monitor_csv(output_layout["monitor_file"], monitor_rows)
