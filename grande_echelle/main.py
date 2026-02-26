@@ -18,101 +18,10 @@ except ImportError:  # pragma: no cover - script execution fallback
     from quasi_static import run_quasi_static
 
 
-def _resolve_existing_path(path_like, *, suffix: str | None = None) -> Path | None:
-    candidat = Path(path_like)
-    candidates = [candidat] if candidat.is_absolute() else [Path.cwd() / candidat, Path(__file__).resolve().parent / candidat]
-    if suffix is not None:
-        candidates = [p.with_suffix(suffix) for p in candidates]
-    return next((p for p in candidates if p.exists()), None)
-
-
-def _candidate_paths(path_like, *, suffix: str | None = None) -> list[Path]:
-    candidat = Path(path_like)
-    candidates = [candidat] if candidat.is_absolute() else [Path.cwd() / candidat, Path(__file__).resolve().parent / candidat]
-    if suffix is not None:
-        candidates = [p.with_suffix(suffix) for p in candidates]
-    return candidates
-
-
-def _compat_config_defaults() -> dict:
-    return {
-        "utiliser_bandes_rivets_z": False,
-        "bandes_rivets_z": [],
-        "rivet_bandes_preset_file": None,
-        "iceberg_max_dx_par_pas_m": None,
-        "iceberg_contact_t_start": 0.0,
-        "write_local_frame_outputs": True,
-        "write_rotation_vtk": True,
-        "write_damage_vtk": True,
-        "write_damage_vtk_if_disabled": False,
-    }
-
-
-def _apply_compat_aliases(cfg) -> None:
-    alias_pairs = [
-        ("ecrire_vtk_tous_les_n_pas", "vtk_write_stride"),
-        ("afficher_console_tous_les_n_pas", "monitor_print_stride"),
-    ]
-    for new_name, old_name in alias_pairs:
-        if not hasattr(cfg, new_name) and hasattr(cfg, old_name):
-            setattr(cfg, new_name, getattr(cfg, old_name))
-
-
-def _apply_missing_defaults(cfg) -> None:
-    defaults = _compat_config_defaults()
-    for name, value in defaults.items():
-        if not hasattr(cfg, name):
-            setattr(cfg, name, value)
-    if not hasattr(cfg, "iceberg_contact_t_end"):
-        cfg.iceberg_contact_t_end = cfg.t_final
-
-
-def _validate_config_values(cfg) -> None:
-    checks = [
-        (cfg.num_steps > 0, "num_steps must be > 0"),
-        (cfg.t_final > 0.0, "t_final must be > 0"),
-        (cfg.ecrire_vtk_tous_les_n_pas > 0, "ecrire_vtk_tous_les_n_pas must be >= 1"),
-        (cfg.afficher_console_tous_les_n_pas > 0, "afficher_console_tous_les_n_pas must be >= 1"),
-        (
-            cfg.iceberg_loading in {"neumann_pressure", "dirichlet_displacement"},
-            "iceberg_loading must be 'neumann_pressure' or 'dirichlet_displacement'",
-        ),
-    ]
-    for ok, message in checks:
-        if not ok:
-            raise ValueError(message)
-
-
-def _build_output_layout(cfg) -> dict:
-    base_dir = Path(cfg.results_root) / cfg.case_name
-    local_frame_dir = base_dir / "local_frame"
-    quasi_static_dir = base_dir / "quasi_static"
-    local_frame_dir.mkdir(exist_ok=True, parents=True)
-    quasi_static_dir.mkdir(exist_ok=True, parents=True)
-    return {
-        "base_dir": base_dir,
-        "local_frame_dir": local_frame_dir,
-        "quasi_static_dir": quasi_static_dir,
-        "local_frame_file": local_frame_dir / "local_basis_vectors.pvd",
-        "displacement_file": quasi_static_dir / "displacement.pvd",
-        "rotation_file": quasi_static_dir / "rotation.pvd",
-        "damage_file": quasi_static_dir / "damage.pvd",
-        "monitor_file": quasi_static_dir / "monitor.csv",
-        "metadata_file": base_dir / "run_metadata.json",
-    }
-
-
-def _run_rivet_comparison(config_factory, label_suffix: str = ""):
-    suffix = f" {label_suffix}" if label_suffix else ""
-    print(f"=== Cas 1 : avec effet des rivets{suffix} ===")
-    lancer_calcul(config_factory(with_rivets=True))
-    print(f"=== Cas 2 : sans effet des rivets{suffix} ===")
-    lancer_calcul(config_factory(with_rivets=False))
-
-
 def config_par_defaut() -> dict:
     iceberg_zone_x_debut_m = 177.0
     iceberg_zone_x_fin_m = 268.0
+
     # 8 bandes rivets homogenisees, verticales (dirigees selon z) et
     # reparties regulierement selon x dans la zone de passage de l'iceberg.
     n_bandes_rivets_x = 8
@@ -130,7 +39,6 @@ def config_par_defaut() -> dict:
                 "nom": f"bande_x_{i_bande:02d}",
                 "x_centre_m": float(x_centre),
                 "largeur_x_m": largeur_bande_x_m,
-                # Bandes verticales sur la zone de coque potentiellement touchee.
                 "z_min_m": -10.2,
                 "z_max_m": 0.2,
                 "facteur_E": 0.98,
@@ -153,18 +61,13 @@ def config_par_defaut() -> dict:
         "rivet_thickness": 2.5e-2,
         "rivet_young_modulus": 190e9,
         "rivet_poisson_ratio": 0.3,
-        "shell_yield_strength_pa": 270e6,
-        "shell_ultimate_strength_pa": 431e6,
-        "steel_sulfur_mass_fraction": 0.00065,
-        # Chargement iceberg (ordre de grandeur prudent)
+        # Chargement iceberg (Dirichlet normal local)
         "sigma": 3.0,
-        "pressure_peak": 2.0e5,
-        "iceberg_loading": "dirichlet_displacement",
         "ramp_amplitude_iceberg": True,
         "iceberg_disp_peak": 2.0e-2,
         "iceberg_disp_sign": 1.0,
         "iceberg_patch_radius_factor": 3.0,
-        # Temps
+        # Temps / sorties
         "t_final": 1.0,
         "num_steps": 20,
         "ecrire_vtk_tous_les_n_pas": 1,
@@ -182,23 +85,18 @@ def config_par_defaut() -> dict:
         "clamp_rotations": True,
         # Zone d'impact / trajectoire
         "iceberg_center_y": -10.8,
-        # Zone de contact longitudinale ~91 m (ordre de grandeur historique),
-        # placee vers l'avant du navire (si x=L correspond a l'etrave).
         "iceberg_zone_x_debut_m": iceberg_zone_x_debut_m,
         "iceberg_zone_x_fin_m": iceberg_zone_x_fin_m,
         "waterline_z": 0.0,
-        # Contact plus proche de la ligne de flottaison (scenario plus realiste).
         "iceberg_depth_below_waterline": 3.0,
         "iceberg_moves_from_xmax_to_xmin": True,
         "iceberg_max_dx_par_pas_m": None,
         "iceberg_contact_t_start": 0.10,
         "iceberg_contact_t_end": 0.95,
-        "y_mid_factor": 0.9,
-        "z_mid_factor": 0.2,
         # Phase-field global
-        "phase_field_preset_file": "petite_echelle/results/local_phase_field_sweep/selected_preset.json",
+        "phase_field_preset_file": None,
         "enable_global_phase_field": True,
-        "phase_field_use_selected_preset": True,
+        "phase_field_use_selected_preset": False,
         "phase_field_gc_j_m2": 7000.0,
         "phase_field_l0_m": 0.4,
         "phase_field_residual_stiffness": 1e-6,
@@ -224,17 +122,6 @@ def creer_config(**updates):
 
 def config_vers_dict(cfg) -> dict:
     data = dict(vars(cfg))
-
-    # Compatibilite anciens noms
-    alias_pairs = [
-        ("ecrire_vtk_tous_les_n_pas", "vtk_write_stride"),
-        ("afficher_console_tous_les_n_pas", "monitor_print_stride"),
-    ]
-    for new_name, old_name in alias_pairs:
-        if new_name not in data and old_name in data:
-            data[new_name] = data[old_name]
-
-    # Solveurs separes si non renseignes
     if data.get("mechanics_petsc_options") is None:
         data["mechanics_petsc_options"] = dict(data["petsc_options"])
     if data.get("damage_petsc_options") is None:
@@ -243,9 +130,39 @@ def config_vers_dict(cfg) -> dict:
 
 
 def verifier_config(cfg) -> None:
-    _apply_compat_aliases(cfg)
-    _apply_missing_defaults(cfg)
-    _validate_config_values(cfg)
+    # Defaults optionnels pour compatibilite pratique des anciens objets config
+    if not hasattr(cfg, "utiliser_bandes_rivets_z"):
+        cfg.utiliser_bandes_rivets_z = False
+    if not hasattr(cfg, "bandes_rivets_z"):
+        cfg.bandes_rivets_z = []
+    if not hasattr(cfg, "rivet_bandes_preset_file"):
+        cfg.rivet_bandes_preset_file = None
+    if not hasattr(cfg, "iceberg_max_dx_par_pas_m"):
+        cfg.iceberg_max_dx_par_pas_m = None
+    if not hasattr(cfg, "iceberg_contact_t_start"):
+        cfg.iceberg_contact_t_start = 0.0
+    if not hasattr(cfg, "iceberg_contact_t_end"):
+        cfg.iceberg_contact_t_end = cfg.t_final
+    if not hasattr(cfg, "write_local_frame_outputs"):
+        cfg.write_local_frame_outputs = True
+    if not hasattr(cfg, "write_rotation_vtk"):
+        cfg.write_rotation_vtk = True
+    if not hasattr(cfg, "write_damage_vtk"):
+        cfg.write_damage_vtk = True
+    if not hasattr(cfg, "write_damage_vtk_if_disabled"):
+        cfg.write_damage_vtk_if_disabled = False
+
+    if cfg.num_steps <= 0:
+        raise ValueError("num_steps must be > 0")
+    if cfg.t_final <= 0.0:
+        raise ValueError("t_final must be > 0")
+    if cfg.ecrire_vtk_tous_les_n_pas <= 0:
+        raise ValueError("ecrire_vtk_tous_les_n_pas must be >= 1")
+    if cfg.afficher_console_tous_les_n_pas <= 0:
+        raise ValueError("afficher_console_tous_les_n_pas must be >= 1")
+    for name in ("iceberg_center_y", "waterline_z", "iceberg_depth_below_waterline"):
+        if not hasattr(cfg, name):
+            raise ValueError(f"Missing required config field: {name}")
 
 
 DEFAULT_CONFIG = creer_config()
@@ -257,8 +174,6 @@ def config_apercu_rapide():
         num_steps=8,
         t_final=0.8,
         ecrire_vtk_tous_les_n_pas=1,
-        iceberg_loading="neumann_pressure",
-        pressure_peak=2e5,
         sigma=2.5,
     )
 
@@ -281,9 +196,7 @@ def config_etude_rivets_rapide(with_rivets: bool = True):
         num_steps=20,
         ecrire_vtk_tous_les_n_pas=1,
         afficher_console_tous_les_n_pas=2,
-        pressure_peak=2.0e5,
         iceberg_disp_peak=1.5e-2,
-        # Pas adaptes simples (plus denses autour du pic de chargement)
         temps_relatifs=[
             0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
             0.50, 0.56, 0.62, 0.68, 0.74, 0.80, 0.86, 0.92, 0.96, 1.0,
@@ -300,7 +213,6 @@ def config_etude_rivets_production(with_rivets: bool = True):
         num_steps=36,
         ecrire_vtk_tous_les_n_pas=1,
         afficher_console_tous_les_n_pas=3,
-        pressure_peak=2.0e5,
         iceberg_disp_peak=1.5e-2,
         temps_relatifs=[
             0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
@@ -315,7 +227,6 @@ def config_etude_rivets_production(with_rivets: bool = True):
 
 
 def config_etude_rivets_screening(with_rivets: bool = True):
-    """Preset rapide pour balayages: meme physique, moins de sorties et PF moins frequent."""
     base = creer_config(
         case_name="rivets_screening",
         num_steps=16,
@@ -326,7 +237,6 @@ def config_etude_rivets_screening(with_rivets: bool = True):
         write_damage_vtk=False,
         phase_field_mise_a_jour_tous_les_n_pas=2,
         iceberg_max_dx_par_pas_m=3.0,
-        pressure_peak=2.0e5,
         iceberg_disp_peak=1.5e-2,
     )
     return config_etude_rivets(with_rivets=with_rivets, base=base)
@@ -337,8 +247,12 @@ def _charger_bandes_rivets_preset_si_disponible(cfg) -> None:
     if not preset_file:
         return
 
-    preset_candidates = _candidate_paths(preset_file)
-    preset_path = _resolve_existing_path(preset_file)
+    candidat = Path(preset_file)
+    if candidat.is_absolute():
+        preset_candidates = [candidat]
+    else:
+        preset_candidates = [Path.cwd() / candidat, Path(__file__).resolve().parent / candidat]
+    preset_path = next((p for p in preset_candidates if p.exists()), None)
     if preset_path is None:
         print(f"Rivet preset not found. Tried: {preset_candidates}")
         return
@@ -346,9 +260,7 @@ def _charger_bandes_rivets_preset_si_disponible(cfg) -> None:
     data = json.loads(preset_path.read_text(encoding="utf-8"))
     bandes = data.get("bandes_rivets_z")
     if not isinstance(bandes, list):
-        raise ValueError(
-            f"Invalid rivet preset format in {preset_path}: expected key 'bandes_rivets_z' (list)"
-        )
+        raise ValueError(f"Invalid rivet preset format in {preset_path}: expected key 'bandes_rivets_z' (list)")
 
     cfg.bandes_rivets_z = bandes
     cfg.utiliser_bandes_rivets_z = True
@@ -357,36 +269,43 @@ def _charger_bandes_rivets_preset_si_disponible(cfg) -> None:
 
 
 def lancer_comparaison_rivets_rapide():
-    _run_rivet_comparison(config_etude_rivets_rapide)
+    print("=== Cas 1 : avec effet des rivets ===")
+    lancer_calcul(config_etude_rivets_rapide(with_rivets=True))
+    print("=== Cas 2 : sans effet des rivets ===")
+    lancer_calcul(config_etude_rivets_rapide(with_rivets=False))
     print("Comparaison terminee.")
     print("Comparer les fichiers monitor.csv et les champs de dommage dans results/.")
 
 
 def lancer_comparaison_rivets_production():
-    _run_rivet_comparison(config_etude_rivets_production)
+    print("=== Cas 1 : avec effet des rivets ===")
+    lancer_calcul(config_etude_rivets_production(with_rivets=True))
+    print("=== Cas 2 : sans effet des rivets ===")
+    lancer_calcul(config_etude_rivets_production(with_rivets=False))
     print("Comparaison terminee.")
     print("Comparer les fichiers monitor.csv et les champs de dommage dans results/.")
 
 
 def lancer_comparaison_rivets_screening():
-    _run_rivet_comparison(config_etude_rivets_screening, label_suffix="(screening)")
+    print("=== Cas 1 : avec effet des rivets (screening) ===")
+    lancer_calcul(config_etude_rivets_screening(with_rivets=True))
+    print("=== Cas 2 : sans effet des rivets (screening) ===")
+    lancer_calcul(config_etude_rivets_screening(with_rivets=False))
     print("Comparaison screening terminee.")
     print("Regarder d'abord monitor.csv, puis relancer en mode rapide/production si besoin.")
 
 
 def analyser_monitor_csv(monitor_csv_file) -> dict:
     path = Path(monitor_csv_file)
-    rows = []
     with path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+        rows = list(csv.DictReader(f))
     if not rows:
         return {"monitor_csv_file": str(path), "n_steps": 0}
 
     total_step_s = sum(float(r.get("temps_pas_s", 0.0)) for r in rows)
     total_mech_s = sum(float(r.get("temps_meca_s", r.get("temps_u_s", 0.0))) for r in rows)
     total_pf_s = sum(float(r.get("temps_phase_field_s", 0.0)) for r in rows)
-    out = {
+    return {
         "monitor_csv_file": str(path),
         "n_steps": len(rows),
         "total_step_s": total_step_s,
@@ -398,7 +317,6 @@ def analyser_monitor_csv(monitor_csv_file) -> dict:
         "last_max_damage": float(rows[-1]["max_damage"]),
         "last_mean_damage": float(rows[-1]["mean_damage"]),
     }
-    return out
 
 
 def _print_field_min_max(name: str, field) -> None:
@@ -415,15 +333,20 @@ def lancer_calcul(cfg=None):
     verifier_config(cfg)
     _charger_bandes_rivets_preset_si_disponible(cfg)
 
-    # ------------------------------------------------------------
+    # ============================================================
     # 1) Lecture du maillage
-    # ------------------------------------------------------------
-    mesh_candidates = _candidate_paths(cfg.mesh_stem, suffix=".msh")
-    mesh_path = _resolve_existing_path(cfg.mesh_stem, suffix=".msh")
+    # ============================================================
+    candidat = Path(cfg.mesh_stem)
+    if candidat.is_absolute():
+        mesh_candidates = [candidat.with_suffix(".msh")]
+    else:
+        mesh_candidates = [
+            (Path.cwd() / candidat).with_suffix(".msh"),
+            (Path(__file__).resolve().parent / candidat).with_suffix(".msh"),
+        ]
+    mesh_path = next((p for p in mesh_candidates if p.exists()), None)
     if mesh_path is None:
-        raise FileNotFoundError(
-            f"Mesh file not found. Tried: {', '.join(str(p) for p in mesh_candidates)}"
-        )
+        raise FileNotFoundError(f"Mesh file not found. Tried: {', '.join(str(p) for p in mesh_candidates)}")
 
     meshdata = io.gmsh.read_from_msh(str(mesh_path), MPI.COMM_WORLD)
     domain = meshdata.mesh
@@ -436,27 +359,50 @@ def lancer_calcul(cfg=None):
     print(f"Cell tags present: {cell_tags is not None}; values={cell_values}")
     print(f"Facet tags present: {facets is not None}; values={facet_values}")
 
-    # ------------------------------------------------------------
+    # ============================================================
     # 2) Dossiers de sortie
-    # ------------------------------------------------------------
-    output_layout = _build_output_layout(cfg)
-    local_frame_dir = output_layout["local_frame_dir"]
+    # ============================================================
+    base_dir = Path(cfg.results_root) / cfg.case_name
+    local_frame_dir = base_dir / "local_frame"
+    quasi_static_dir = base_dir / "quasi_static"
+    local_frame_dir.mkdir(exist_ok=True, parents=True)
+    quasi_static_dir.mkdir(exist_ok=True, parents=True)
 
-    # ------------------------------------------------------------
-    # 3) Preset phase-field (optionnel)
-    # ------------------------------------------------------------
-    preset_candidates = _candidate_paths(cfg.phase_field_preset_file)
-    preset_path = _resolve_existing_path(cfg.phase_field_preset_file)
-    if preset_path is None:
+    output_layout = {
+        "base_dir": base_dir,
+        "local_frame_dir": local_frame_dir,
+        "quasi_static_dir": quasi_static_dir,
+        "local_frame_file": local_frame_dir / "local_basis_vectors.pvd",
+        "displacement_file": quasi_static_dir / "displacement.pvd",
+        "rotation_file": quasi_static_dir / "rotation.pvd",
+        "damage_file": quasi_static_dir / "damage.pvd",
+        "monitor_file": quasi_static_dir / "monitor.csv",
+        "metadata_file": base_dir / "run_metadata.json",
+    }
+
+    # ============================================================
+    # 3) Preset phase-field global (optionnel)
+    # ============================================================
+    if not cfg.phase_field_preset_file:
         phase_field_preset = None
-        print(f"Phase-field preset not found. Tried: {preset_candidates}")
+        print("No phase-field preset file configured (using config values for Gc/l0).")
     else:
-        phase_field_preset = json.loads(preset_path.read_text(encoding="utf-8"))
-        print(f"Using phase-field preset: {preset_path}")
+        preset_cfg_path = Path(cfg.phase_field_preset_file)
+        if preset_cfg_path.is_absolute():
+            preset_candidates = [preset_cfg_path]
+        else:
+            preset_candidates = [Path.cwd() / preset_cfg_path, Path(__file__).resolve().parent / preset_cfg_path]
+        preset_path = next((p for p in preset_candidates if p.exists()), None)
+        if preset_path is None:
+            phase_field_preset = None
+            print(f"Phase-field preset not found. Tried: {preset_candidates}")
+        else:
+            phase_field_preset = json.loads(preset_path.read_text(encoding="utf-8"))
+            print(f"Using phase-field preset: {preset_path}")
 
-    # ------------------------------------------------------------
-    # 4) Modele coque + fichiers de diagnostic
-    # ------------------------------------------------------------
+    # ============================================================
+    # 4) Modele coque + diagnostics champs
+    # ============================================================
     model = build_shell_model(domain, cell_tags, facets, cfg)
     _print_field_min_max("YoungModulus", model.E_field)
     _print_field_min_max("Thickness", model.thick_field)
@@ -484,9 +430,9 @@ def lancer_calcul(cfg=None):
             vtk.write_function(model.rivet_bands_mask_field, 0.0)
             vtk.write_function(model.rivet_bands_mask_viz_field, 0.0)
 
-    # ------------------------------------------------------------
+    # ============================================================
     # 5) Metadonnees + calcul quasi-statique
-    # ------------------------------------------------------------
+    # ============================================================
     if MPI.COMM_WORLD.rank == 0:
         metadata = {
             "metadata_schema": "titanic-fem-run/v1",
@@ -494,15 +440,11 @@ def lancer_calcul(cfg=None):
             "config": config_vers_dict(cfg),
             "phase_field_preset": phase_field_preset,
         }
-        output_layout["metadata_file"].write_text(
-            json.dumps(metadata, indent=2),
-            encoding="utf-8",
-        )
+        output_layout["metadata_file"].write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
     run_quasi_static(model, cfg, output_layout, phase_field_preset=phase_field_preset)
 
 
-# Alias simple pour compatibilite avec les anciens appels.
 run = lancer_calcul
 
 

@@ -137,19 +137,28 @@ def _build_output_path(cfg) -> Path:
 def creer_preset_bandes_grande_echelle(
     path: str | Path | None = None,
     *,
+    x_start_m: float = 177.0,
+    x_end_m: float = 268.0,
+    n_bandes_x: int = 8,
+    largeur_x_m: float = 0.30,
+    z_min_m: float = -10.2,
+    z_max_m: float = 0.2,
     facteur_E: float = 0.98,
     facteur_epaisseur: float = 1.00,
     facteur_Gc: float = 0.88,
 ):
     """Ecrit un preset JSON simple pour grande_echelle (homogeneisation en bandes)."""
-    z_centres = (-9.3, -8.1, -6.9, -5.7, -4.5, -3.3, -2.1, -0.9)
+    x_margin = 0.5 * largeur_x_m
+    x_centres = np.linspace(x_start_m + x_margin, x_end_m - x_margin, n_bandes_x)
     bandes_rivets = []
-    for z_centre in z_centres:
+    for i_bande, x_centre in enumerate(x_centres, start=1):
         bandes_rivets.append(
             {
-                "nom": f"bande_z_{z_centre:+.1f}m".replace(".", "p"),
-                "z_centre_m": z_centre,
-                "largeur_m": 0.30,
+                "nom": f"bande_x_{i_bande:02d}",
+                "x_centre_m": float(x_centre),
+                "largeur_x_m": float(largeur_x_m),
+                "z_min_m": float(z_min_m),
+                "z_max_m": float(z_max_m),
                 "facteur_E": float(facteur_E),
                 "facteur_epaisseur": float(facteur_epaisseur),
                 "facteur_Gc": float(facteur_Gc),
@@ -260,7 +269,11 @@ def lancer_calcul(cfg=None):
     # 7) Boucle de chargement (inchangée)
     tractions = np.linspace(0.0, cfg.max_traction, cfg.steps)
     max_damage_final = 0.0
+    max_u_final = 0.0
     last_step = -1
+    last_traction = 0.0
+    rupture_detected = False
+    rupture_traction = None
 
     for step, t_val in enumerate(tractions):
         T_mag.value = t_val
@@ -302,7 +315,9 @@ def lancer_calcul(cfg=None):
         max_d = float(np.max(d.x.array))
         max_u = float(np.max(np.abs(u.x.array)))
         max_damage_final = max_d
+        max_u_final = max_u
         last_step = step
+        last_traction = float(t_val)
 
         print(
             f"Step {step}: Force={t_val/1e6:.1f} MPa | U={max_u:.2e} m | "
@@ -311,6 +326,8 @@ def lancer_calcul(cfg=None):
 
         if max_d > 0.99:
             print("Fissure complete detectee !")
+            rupture_detected = True
+            rupture_traction = float(t_val)
             break
 
     vtx.close()
@@ -321,7 +338,11 @@ def lancer_calcul(cfg=None):
                 "config": config_vers_dict(cfg),
                 "export_path": str(export_path),
                 "last_step": last_step,
+                "last_traction_pa": last_traction,
+                "max_u_final_m": max_u_final,
                 "max_damage_final": max_damage_final,
+                "rupture_detected": rupture_detected,
+                "rupture_traction_pa": rupture_traction,
             },
             indent=2,
         ),
@@ -333,7 +354,11 @@ def lancer_calcul(cfg=None):
         "export_path": str(export_path),
         "output_dir": str(export_path.parent),
         "last_step": last_step,
+        "last_traction_pa": last_traction,
+        "max_u_final_m": max_u_final,
         "max_damage_final": max_damage_final,
+        "rupture_detected": rupture_detected,
+        "rupture_traction_pa": rupture_traction,
         "summary_path": str(summary_path),
     }
 

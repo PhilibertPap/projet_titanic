@@ -4,7 +4,6 @@ import numpy as np
 
 filename = "mesh/coque"
 SHELL_CELL_TAG = 1
-RIVET_CELL_TAG = 2
 
 
 # Geometry scales for a Titanic-like half-hull shell surface
