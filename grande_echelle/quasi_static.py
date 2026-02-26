@@ -70,9 +70,16 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
         x0 = x_zone_debut
         x1 = x_zone_fin
     vx = (x1 - x0) / cfg.t_final
+    contact_t_start = float(getattr(cfg, "iceberg_contact_t_start", 0.0))
+    contact_t_end = float(getattr(cfg, "iceberg_contact_t_end", cfg.t_final))
+    contact_t_start = float(np.clip(contact_t_start, 0.0, cfg.t_final))
+    contact_t_end = float(np.clip(contact_t_end, contact_t_start, cfg.t_final))
+    contact_duration = max(contact_t_end - contact_t_start, 1e-12)
 
+    # The iceberg patch moves only during the contact window [t_start, t_end].
+    # This avoids loading the shell during non-contact stages.
     c0 = fem.Constant(domain, (x0, y_mid, z_mid))
-    v_ice = fem.Constant(domain, (vx, 0.0, 0.0))
+    v_ice = fem.Constant(domain, ((x1 - x0) / contact_duration, 0.0, 0.0))
     sigma = fem.Constant(domain, cfg.sigma)
     p0 = fem.Constant(domain, 0.0 if getattr(cfg, "ramp_amplitude_iceberg", False) else cfg.pressure_peak)
 
@@ -108,6 +115,16 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
             f"Unknown cfg.iceberg_loading='{cfg.iceberg_loading}'. "
             "Expected 'neumann_pressure' or 'dirichlet_displacement'."
         )
+
+    def _contact_progress(tn: float) -> float:
+        if tn <= contact_t_start:
+            return 0.0
+        if tn >= contact_t_end:
+            return 1.0
+        return (tn - contact_t_start) / contact_duration
+
+    def _contact_active(tn: float) -> bool:
+        return contact_t_start <= tn <= contact_t_end
 
     # Probleme lineaire mecanique (deplacement/rotation de coque)
     mechanics_petsc_options = cfg.mechanics_petsc_options or cfg.petsc_options
@@ -255,13 +272,15 @@ def run_quasi_static(model, cfg, output_layout, phase_field_preset=None):
                     mech_wall_s = 0.0
                     damage_wall_s = 0.0
                     t.value = tn
-                    facteur_rampe = 1.0
+                    in_contact = _contact_active(float(tn))
+                    contact_progress = _contact_progress(float(tn))
+                    facteur_rampe = 1.0 if in_contact else 0.0
                     if ramp_amplitude_iceberg:
-                        facteur_rampe = 0.0 if cfg.t_final <= 0 else float(tn / cfg.t_final)
+                        facteur_rampe = contact_progress if in_contact else 0.0
                     if cfg.iceberg_loading == "neumann_pressure":
                         p0.value = cfg.pressure_peak * facteur_rampe
                     if cfg.iceberg_loading == "dirichlet_displacement":
-                        x_center = x0 + vx * tn
+                        x_center = x0 + (x1 - x0) * contact_progress
 
                         def prescribed_displacement(x):
                             r2 = (x[0] - x_center) ** 2 + (x[2] - z_mid) ** 2

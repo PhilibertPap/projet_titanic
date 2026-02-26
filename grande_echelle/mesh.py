@@ -1,4 +1,5 @@
 import gmsh
+import numpy as np
 
 
 filename = "mesh/coque"
@@ -53,28 +54,30 @@ ICEBERG_X_END = 92.0
 
 # Mesh size field (refine around the iceberg trajectory band)
 SIZE_MIN = 0.35
-SIZE_MAX = 2.60
+SIZE_MAX = 3.00
 DIST_MIN = 1.2
 DIST_MAX = 6.5
 
 # Extra refinement in horizontal bands (all x) centered on the main transverse
 # curvature zones of the shell section (bilge + flank/flare transition).
-CURVATURE_BAND_SIZE_MIN = 0.60
-CURVATURE_BAND_SIZE_MAX = 2.60
+CURVATURE_BAND_SIZE_MIN = 0.75
+CURVATURE_BAND_SIZE_MAX = 3.00
 CURVATURE_BAND_HALF_THICKNESS_Z = 0.70
 CURVATURE_BAND_MARGIN_Y = 1.0
 CURVATURE_BAND_MARGIN_X = 8.0
 
-# Local refinement to resolve homogenized rivet bands (8 rows along z) without
-# globally over-refining the whole hull patch. Band width is kept realistic
-# (about 0.30 m) and only the impact longitudinal zone is refined.
-RIVET_BAND_Z_CENTERS = (-9.3, -8.1, -6.9, -5.7, -4.5, -3.3, -2.1, -0.9)
-RIVET_BAND_PHYSICAL_WIDTH_Z = 0.30
-RIVET_BAND_REFINE_HALF_THICKNESS_Z = 0.22
-RIVET_BAND_SIZE_MIN = 0.12
-RIVET_BAND_SIZE_MAX = 2.60
-RIVET_BAND_MARGIN_X = 4.0
-RIVET_BAND_MARGIN_Y = 0.8
+# Local refinement to resolve homogenized rivet bands represented as vertical
+# strips (directed along z) and distributed regularly in x within the iceberg
+# impact zone.
+N_RIVET_STRIPS_X = 8
+RIVET_STRIP_PHYSICAL_WIDTH_X = 0.30
+RIVET_STRIP_Z_MIN = -10.2
+RIVET_STRIP_Z_MAX = 0.2
+RIVET_STRIP_SIZE_MIN = 0.12
+RIVET_STRIP_SIZE_MAX = 3.00
+RIVET_STRIP_MARGIN_X = 0.35
+RIVET_STRIP_MARGIN_Y = 0.5
+RIVET_STRIP_REFINE_HALF_WIDTH_Y = 1.2
 
 
 def _smoothstep(a: float, b: float, x: float) -> float:
@@ -255,28 +258,28 @@ def _add_mesh_size_field(occ) -> None:
         field.setNumber(f_box, "ZMax", z_center + CURVATURE_BAND_HALF_THICKNESS_Z)
         curvature_boxes.append(f_box)
 
-    # 3) Refinement around the 8 homogenized rivet bands (same z-centers as
-    # grande_echelle/main.py default bands) in the impact longitudinal window.
+    # 3) Refinement around the 8 vertical homogenized rivet strips (same x-centers
+    # as grande_echelle/main.py default bands) in the iceberg passage zone.
     rivet_band_boxes = []
-    y_extent_rivet = 1.1 * max(abs(ICEBERG_CENTER_Y), abs(y_shell_ref)) + RIVET_BAND_MARGIN_Y
-    for z_center in RIVET_BAND_Z_CENTERS:
+    # Keep rivet-band refinement tightly localized around the iceberg track.
+    y_min_rivet = ICEBERG_CENTER_Y - RIVET_STRIP_REFINE_HALF_WIDTH_Y - RIVET_STRIP_MARGIN_Y
+    y_max_rivet = ICEBERG_CENTER_Y + RIVET_STRIP_REFINE_HALF_WIDTH_Y + RIVET_STRIP_MARGIN_Y
+    x_margin = 0.5 * RIVET_STRIP_PHYSICAL_WIDTH_X
+    x_centers = np.linspace(
+        x_start + x_margin,
+        x_end - x_margin,
+        N_RIVET_STRIPS_X,
+    )
+    for x_center in x_centers:
         f_box = field.add("Box")
-        field.setNumber(f_box, "VIn", RIVET_BAND_SIZE_MIN)
-        field.setNumber(f_box, "VOut", RIVET_BAND_SIZE_MAX)
-        field.setNumber(f_box, "XMin", x_start - RIVET_BAND_MARGIN_X)
-        field.setNumber(f_box, "XMax", x_end + RIVET_BAND_MARGIN_X)
-        field.setNumber(f_box, "YMin", -y_extent_rivet)
-        field.setNumber(f_box, "YMax", y_extent_rivet)
-        field.setNumber(
-            f_box,
-            "ZMin",
-            z_center - max(0.5 * RIVET_BAND_PHYSICAL_WIDTH_Z, RIVET_BAND_REFINE_HALF_THICKNESS_Z),
-        )
-        field.setNumber(
-            f_box,
-            "ZMax",
-            z_center + max(0.5 * RIVET_BAND_PHYSICAL_WIDTH_Z, RIVET_BAND_REFINE_HALF_THICKNESS_Z),
-        )
+        field.setNumber(f_box, "VIn", RIVET_STRIP_SIZE_MIN)
+        field.setNumber(f_box, "VOut", RIVET_STRIP_SIZE_MAX)
+        field.setNumber(f_box, "XMin", x_center - 0.5 * RIVET_STRIP_PHYSICAL_WIDTH_X - RIVET_STRIP_MARGIN_X)
+        field.setNumber(f_box, "XMax", x_center + 0.5 * RIVET_STRIP_PHYSICAL_WIDTH_X + RIVET_STRIP_MARGIN_X)
+        field.setNumber(f_box, "YMin", min(y_min_rivet, y_max_rivet))
+        field.setNumber(f_box, "YMax", max(y_min_rivet, y_max_rivet))
+        field.setNumber(f_box, "ZMin", RIVET_STRIP_Z_MIN)
+        field.setNumber(f_box, "ZMax", RIVET_STRIP_Z_MAX)
         rivet_band_boxes.append(f_box)
 
     # 4) Combine trajectory + curvature-zone bands + rivet-band boxes

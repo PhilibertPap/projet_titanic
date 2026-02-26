@@ -36,6 +36,52 @@ def _make_dg0_scalar_function(domain, name: str, value: float):
     return field
 
 
+def _bandes_rivets_rectangles(bandes_cfg):
+    """
+    Convertit la config des bandes rivets en rectangles (x,z) sur la coque.
+
+    Formats supportes:
+    - legacy: z_centre_m + largeur_m (+ x_debut_m/x_fin_m optionnels)
+    - nouveau: x_centre_m + largeur_x_m (+ z_min_m/z_max_m)
+    """
+    rectangles = []
+    for bande in bandes_cfg:
+        # x-interval
+        if "x_centre_m" in bande:
+            xc = float(bande["x_centre_m"])
+            largeur_x = float(bande.get("largeur_x_m", bande.get("largeur_m", 0.30)))
+            xmin = xc - 0.5 * largeur_x
+            xmax = xc + 0.5 * largeur_x
+        elif "x_debut_m" in bande and "x_fin_m" in bande:
+            xmin = min(float(bande["x_debut_m"]), float(bande["x_fin_m"]))
+            xmax = max(float(bande["x_debut_m"]), float(bande["x_fin_m"]))
+        else:
+            xmin = -np.inf
+            xmax = np.inf
+
+        # z-interval
+        if "z_centre_m" in bande:
+            zc = float(bande["z_centre_m"])
+            largeur_z = float(bande.get("largeur_m", bande.get("largeur_z_m", 0.30)))
+            zmin = zc - 0.5 * largeur_z
+            zmax = zc + 0.5 * largeur_z
+        else:
+            zmin = float(bande.get("z_min_m", -np.inf))
+            zmax = float(bande.get("z_max_m", np.inf))
+            if zmax < zmin:
+                zmin, zmax = zmax, zmin
+
+        rectangles.append(
+            {
+                "xmin": xmin,
+                "xmax": xmax,
+                "zmin": zmin,
+                "zmax": zmax,
+            }
+        )
+    return rectangles
+
+
 def _champ_facteur_bandes_rivets(domain, bandes_cfg, nom_facteur: str, default: float = 1.0):
     V0 = fem.functionspace(domain, ("DG", 0))
     facteur = fem.Function(V0, name=f"{nom_facteur}_BandesRivets")
@@ -43,27 +89,25 @@ def _champ_facteur_bandes_rivets(domain, bandes_cfg, nom_facteur: str, default: 
     if not bandes_cfg:
         return facteur
 
-    bandes = []
-    for bande in bandes_cfg:
-        zc = float(bande["z_centre_m"])
-        largeur = float(bande["largeur_m"])
-        bandes.append(
-            (
-                zc - 0.5 * largeur,
-                zc + 0.5 * largeur,
-                float(bande.get(nom_facteur, default)),
-            )
-        )
+    bandes = _bandes_rivets_rectangles(bandes_cfg)
+    for bande, rect in zip(bandes_cfg, bandes):
+        rect["valeur"] = float(bande.get(nom_facteur, default))
 
-    def valeur_par_z(x):
+    def valeur_par_bande(x):
+        xcoord = x[0]
         z = x[2]
         out = np.full_like(z, float(default), dtype=float)
-        for zmin, zmax, valeur in bandes:
-            masque = (z >= zmin) & (z <= zmax)
-            out[masque] = valeur
+        for bande in bandes:
+            masque = (
+                (z >= bande["zmin"])
+                & (z <= bande["zmax"])
+                & (xcoord >= bande["xmin"])
+                & (xcoord <= bande["xmax"])
+            )
+            out[masque] = bande["valeur"]
         return out
 
-    facteur.interpolate(valeur_par_z)
+    facteur.interpolate(valeur_par_bande)
     return facteur
 
 
@@ -75,21 +119,52 @@ def _champ_masque_bandes_rivets(domain, bandes_cfg):
     if not bandes_cfg:
         return masque
 
-    intervals = []
-    for bande in bandes_cfg:
-        zc = float(bande["z_centre_m"])
-        largeur = float(bande["largeur_m"])
-        intervals.append((zc - 0.5 * largeur, zc + 0.5 * largeur))
+    bands = _bandes_rivets_rectangles(bandes_cfg)
 
     def valeur_masque(x):
+        xcoord = x[0]
         z = x[2]
         out = np.zeros_like(z, dtype=float)
-        for zmin, zmax in intervals:
-            out[(z >= zmin) & (z <= zmax)] = 1.0
+        for bande in bands:
+            masque = (
+                (z >= bande["zmin"])
+                & (z <= bande["zmax"])
+                & (xcoord >= bande["xmin"])
+                & (xcoord <= bande["xmax"])
+            )
+            out[masque] = 1.0
         return out
 
     masque.interpolate(valeur_masque)
     return masque
+
+
+def _champ_masque_bandes_rivets_viz(domain, bandes_cfg):
+    """Masque de visualisation (CG1) pour ParaView, plus lisible que DG0."""
+    Vviz = fem.functionspace(domain, ("CG", 1))
+    mask_viz = fem.Function(Vviz, name="RivetBandsMaskViz")
+    mask_viz.x.array[:] = 0.0
+    if not bandes_cfg:
+        return mask_viz
+
+    bands = _bandes_rivets_rectangles(bandes_cfg)
+
+    def valeur_masque_viz(x):
+        xcoord = x[0]
+        z = x[2]
+        out = np.zeros_like(z, dtype=float)
+        for bande in bands:
+            masque = (
+                (z >= bande["zmin"])
+                & (z <= bande["zmax"])
+                & (xcoord >= bande["xmin"])
+                & (xcoord <= bande["xmax"])
+            )
+            out[masque] = 1.0
+        return out
+
+    mask_viz.interpolate(valeur_masque_viz)
+    return mask_viz
 
 
 def _build_material_fields(domain, cell_tags, cfg):
@@ -183,6 +258,7 @@ class ShellModel:
     thick_field: any
     gc_factor_field: any
     rivet_bands_mask_field: any
+    rivet_bands_mask_viz_field: any
     damage_state: any
 
 
@@ -262,6 +338,7 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
         bandes_gc = []
     gc_factor_field = _champ_facteur_bandes_rivets(domain, bandes_gc, "facteur_Gc", 1.0)
     rivet_bands_mask_field = _champ_masque_bandes_rivets(domain, bandes_gc)
+    rivet_bands_mask_viz_field = _champ_masque_bandes_rivets_viz(domain, bandes_gc)
     k_res_mech = fem.Constant(
         domain,
         cfg.phase_field_residual_stiffness if cfg.enable_global_phase_field else 0.0,
@@ -307,5 +384,6 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
         thick_field=thick,
         gc_factor_field=gc_factor_field,
         rivet_bands_mask_field=rivet_bands_mask_field,
+        rivet_bands_mask_viz_field=rivet_bands_mask_viz_field,
         damage_state=damage_state,
     )

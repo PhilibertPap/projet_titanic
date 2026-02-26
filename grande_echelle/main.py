@@ -19,14 +19,28 @@ except ImportError:  # pragma: no cover - script execution fallback
 
 
 def config_par_defaut() -> dict:
-    # Bandes de rivets "homogeneisees" (approximation grande echelle).
+    iceberg_zone_x_debut_m = 177.0
+    iceberg_zone_x_fin_m = 268.0
+    # 8 bandes rivets homogenisees, verticales (dirigees selon z) et
+    # reparties regulierement selon x dans la zone de passage de l'iceberg.
+    n_bandes_rivets_x = 8
+    largeur_bande_x_m = 0.30
+    x_margin = 0.5 * largeur_bande_x_m
+    x_centres = np.linspace(
+        iceberg_zone_x_debut_m + x_margin,
+        iceberg_zone_x_fin_m - x_margin,
+        n_bandes_rivets_x,
+    )
     bandes_rivets = []
-    for z_centre in (-9.3, -8.1, -6.9, -5.7, -4.5, -3.3, -2.1, -0.9):
+    for i_bande, x_centre in enumerate(x_centres, start=1):
         bandes_rivets.append(
             {
-                "nom": f"bande_z_{z_centre:+.1f}m".replace(".", "p"),
-                "z_centre_m": z_centre,
-                "largeur_m": 0.30,
+                "nom": f"bande_x_{i_bande:02d}",
+                "x_centre_m": float(x_centre),
+                "largeur_x_m": largeur_bande_x_m,
+                # Bandes verticales sur la zone de coque potentiellement touchee.
+                "z_min_m": -10.2,
+                "z_max_m": 0.2,
                 "facteur_E": 0.98,
                 "facteur_epaisseur": 1.00,
                 "facteur_Gc": 0.88,
@@ -76,12 +90,17 @@ def config_par_defaut() -> dict:
         "clamp_rotations": True,
         # Zone d'impact / trajectoire
         "iceberg_center_y": -10.8,
-        "iceberg_zone_x_debut_m": 0.0,
-        "iceberg_zone_x_fin_m": 92.0,
+        # Zone de contact longitudinale ~91 m (ordre de grandeur historique),
+        # placee vers l'avant du navire (si x=L correspond a l'etrave).
+        "iceberg_zone_x_debut_m": iceberg_zone_x_debut_m,
+        "iceberg_zone_x_fin_m": iceberg_zone_x_fin_m,
         "waterline_z": 0.0,
-        "iceberg_depth_below_waterline": 7.5,
+        # Contact plus proche de la ligne de flottaison (scenario plus realiste).
+        "iceberg_depth_below_waterline": 3.0,
         "iceberg_moves_from_xmax_to_xmin": True,
         "iceberg_max_dx_par_pas_m": None,
+        "iceberg_contact_t_start": 0.10,
+        "iceberg_contact_t_end": 0.95,
         "y_mid_factor": 0.9,
         "z_mid_factor": 0.2,
         # Phase-field global
@@ -142,6 +161,10 @@ def verifier_config(cfg) -> None:
         cfg.rivet_bandes_preset_file = None
     if not hasattr(cfg, "iceberg_max_dx_par_pas_m"):
         cfg.iceberg_max_dx_par_pas_m = None
+    if not hasattr(cfg, "iceberg_contact_t_start"):
+        cfg.iceberg_contact_t_start = 0.0
+    if not hasattr(cfg, "iceberg_contact_t_end"):
+        cfg.iceberg_contact_t_end = cfg.t_final
     if not hasattr(cfg, "write_local_frame_outputs"):
         cfg.write_local_frame_outputs = True
     if not hasattr(cfg, "write_rotation_vtk"):
@@ -192,7 +215,7 @@ def config_etude_rivets(with_rivets: bool, base=None):
 
 def config_etude_rivets_rapide(with_rivets: bool = True):
     base = creer_config(
-        case_name="titanic_rivets_rapide",
+        case_name="t1912_fast_contact_z3_riv8x",
         num_steps=20,
         ecrire_vtk_tous_les_n_pas=1,
         afficher_console_tous_les_n_pas=2,
@@ -232,7 +255,7 @@ def config_etude_rivets_production(with_rivets: bool = True):
 def config_etude_rivets_screening(with_rivets: bool = True):
     """Preset rapide pour balayages: meme physique, moins de sorties et PF moins frequent."""
     base = creer_config(
-        case_name="titanic_rivets_screening",
+        case_name="t1912_scr_contact_z3_riv8x",
         num_steps=16,
         ecrire_vtk_tous_les_n_pas=4,
         afficher_console_tous_les_n_pas=4,
@@ -454,6 +477,7 @@ def lancer_calcul(cfg=None):
             vtk.write_function(model.thick_field, 0.0)
             vtk.write_function(model.gc_factor_field, 0.0)
             vtk.write_function(model.rivet_bands_mask_field, 0.0)
+            vtk.write_function(model.rivet_bands_mask_viz_field, 0.0)
 
     # ------------------------------------------------------------
     # 5) Metadonnees + calcul quasi-statique
