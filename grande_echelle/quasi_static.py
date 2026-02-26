@@ -3,6 +3,7 @@ from time import perf_counter
 
 import numpy as np
 from mpi4py import MPI
+from petsc4py import PETSc
 import ufl
 from dolfinx import fem, io
 import dolfinx.fem.petsc
@@ -23,6 +24,18 @@ def _write_monitor_csv(path, rows):
 
 def _try_build_damage_vi_solver(Vd, damage, F_d, J_d, cfg):
     if not bool(getattr(cfg, "phase_field_use_snes_vi", True)):
+        return None
+    # Preflight PETSc SNESVI support before constructing a DOLFINx NonlinearProblem.
+    # On some versions, constructing NonlinearProblem may fail partway and emit a
+    # noisy __del__ warning if SNES VI is unavailable.
+    try:
+        snes_probe = PETSc.SNES().create(MPI.COMM_SELF)
+        snes_probe.setType("vinewtonrsls")
+        if not hasattr(snes_probe, "setVariableBounds"):
+            snes_probe.destroy()
+            return None
+        snes_probe.destroy()
+    except Exception:
         return None
     try:
         problem_vi = dolfinx.fem.petsc.NonlinearProblem(F_d, damage, bcs=[], J=J_d)

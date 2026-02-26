@@ -88,7 +88,7 @@ def config_par_defaut() -> dict:
         "iceberg_zone_x_debut_m": iceberg_zone_x_debut_m,
         "iceberg_zone_x_fin_m": iceberg_zone_x_fin_m,
         "waterline_z": 0.0,
-        "iceberg_depth_below_waterline": 5.5,
+        "iceberg_depth_below_waterline": 7.0,
         "iceberg_moves_from_xmax_to_xmin": True,
         "iceberg_max_dx_par_pas_m": None,
         "iceberg_contact_t_start": 0.10,

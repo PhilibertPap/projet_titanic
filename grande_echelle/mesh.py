@@ -22,12 +22,12 @@ Z_TOP = FREEBOARD_TO_DECK
 # - broad parallel mid-body
 # - tapered bow/stern
 # - slight tumblehome toward upper deck (very mild)
-Y_KEEL = 0.08
-Y_BILGE_BASE = 8.6
+Y_KEEL = 0.0
+Y_BILGE_BASE = 11.4
 Y_WATERLINE_BASE = 13.9
 Y_DECK_BASE = 13.5
-Y_MIDSHIP_FULLNESS = 0.10
-Y_LONGITUDINAL_WARP = 0.12
+Y_MIDSHIP_FULLNESS = 0.06
+Y_LONGITUDINAL_WARP = 0.08
 
 # Longitudinal curvature in z (very mild):
 # - near-waterline sheer-like variation stronger than near keel
@@ -39,15 +39,15 @@ Z_END_RISE_AMPLITUDE = 0.18
 # Longitudinal planform narrowing (half-breadth effect): long parallel mid-body and smoother ends
 MIDBODY_U0 = 0.14
 MIDBODY_U1 = 0.86
-END_TAPER_MIN = 0.22
+END_TAPER_MIN = 0.16
 
 # Loft sections (couples) along x
 N_SECTIONS_X = 11
-N_SECTION_PTS = 13
+N_SECTION_PTS = 17
 
 # Iceberg trajectory (used only to define a mesh-refinement band)
 ICEBERG_CENTER_Y = -10.8    # m, starboard side (sign flipped)
-ICEBERG_CENTER_Z = -7.5     # m, below waterline (z=0)
+ICEBERG_CENTER_Z = -7.0     # m, below waterline (z=0)
 # Longitudinal contact/damage zone (order of magnitude ~300 ft ~ 91 m)
 ICEBERG_X_START = 177.0
 ICEBERG_X_END = 268.0
@@ -57,14 +57,6 @@ SIZE_MIN = 0.35
 SIZE_MAX = 3.00
 DIST_MIN = 1.2
 DIST_MAX = 6.5
-
-# Extra refinement in horizontal bands (all x) centered on the main transverse
-# curvature zones of the shell section (bilge + flank/flare transition).
-CURVATURE_BAND_SIZE_MIN = 0.75
-CURVATURE_BAND_SIZE_MAX = 3.00
-CURVATURE_BAND_HALF_THICKNESS_Z = 0.70
-CURVATURE_BAND_MARGIN_Y = 1.0
-CURVATURE_BAND_MARGIN_X = 8.0
 
 # Local refinement to resolve homogenized rivet bands represented as vertical
 # strips (directed along z) and distributed regularly in x within the iceberg
@@ -122,13 +114,16 @@ def hull_xyz(u: float, v: float) -> tuple[float, float, float]:
     y_deck = Y_DECK_BASE * fullness * fullness_x
 
     # Piecewise smooth half-breadth profile from keel to deck
-    s_bilge = 0.38
+    # Lower bilge transition + sharper turn gives a more vertical flank over a
+    # larger height before the hull rounds out.
+    s_bilge = 0.11
     if s <= s_bilge:
         t = s / s_bilge
-        y_section = Y_KEEL + (y_bilge - Y_KEEL) * (t ** 1.75)
+        y_section = Y_KEEL + (y_bilge - Y_KEEL) * (t ** 1.70)
     elif s <= s_water:
         t = (s - s_bilge) / max(s_water - s_bilge, 1e-9)
-        y_section = y_bilge + (y_waterline - y_bilge) * (t ** 0.95)
+        # Slightly convex flank-to-waterline transition (avoid visible concavity)
+        y_section = y_bilge + (y_waterline - y_bilge) * (t ** 0.88)
     else:
         t = (s - s_water) / max(1.0 - s_water, 1e-9)
         # very mild tumblehome toward the deck
@@ -230,36 +225,7 @@ def _add_mesh_size_field(occ) -> None:
     field.setNumber(f_th_traj, "DistMin", DIST_MIN)
     field.setNumber(f_th_traj, "DistMax", DIST_MAX)
 
-    # 2) Raffinement supplementaire dans la zone longitudinale d'impact :
-    # bandes horizontales autour des zones de forte courbure (bouchain + flanc).
-    y_extent = 1.2 * max(
-        abs(Y_WATERLINE_BASE * (1.0 + Y_MIDSHIP_FULLNESS)),
-        abs(Y_DECK_BASE * (1.0 + Y_MIDSHIP_FULLNESS)),
-        abs(ICEBERG_CENTER_Y),
-    ) + CURVATURE_BAND_MARGIN_Y
-
-    # Approximate curvature-zone heights from the section profile definition.
-    # s_bilge is where the strong "turn of bilge" transitions into the flank.
-    s_bilge = 0.38
-    z_bilge = Z_BOTTOM + (Z_TOP - Z_BOTTOM) * s_bilge
-    # A second, milder band slightly above bilge captures the flank curvature
-    # where the hull side is still strongly changing.
-    z_flank = Z_BOTTOM + (Z_TOP - Z_BOTTOM) * 0.55
-
-    curvature_boxes = []
-    for z_center in (z_bilge, z_flank):
-        f_box = field.add("Box")
-        field.setNumber(f_box, "VIn", CURVATURE_BAND_SIZE_MIN)
-        field.setNumber(f_box, "VOut", CURVATURE_BAND_SIZE_MAX)
-        field.setNumber(f_box, "XMin", x_start - CURVATURE_BAND_MARGIN_X)
-        field.setNumber(f_box, "XMax", x_end + CURVATURE_BAND_MARGIN_X)
-        field.setNumber(f_box, "YMin", -y_extent)
-        field.setNumber(f_box, "YMax", y_extent)
-        field.setNumber(f_box, "ZMin", z_center - CURVATURE_BAND_HALF_THICKNESS_Z)
-        field.setNumber(f_box, "ZMax", z_center + CURVATURE_BAND_HALF_THICKNESS_Z)
-        curvature_boxes.append(f_box)
-
-    # 3) Refinement around the 8 vertical homogenized rivet strips (same x-centers
+    # 2) Refinement around the 8 vertical homogenized rivet strips (same x-centers
     # as grande_echelle/main.py default bands) in the iceberg passage zone.
     rivet_band_boxes = []
     # For vertical rivet strips, keep the x-window narrow but cover the whole
@@ -287,9 +253,9 @@ def _add_mesh_size_field(occ) -> None:
         field.setNumber(f_box, "ZMax", RIVET_STRIP_Z_MAX)
         rivet_band_boxes.append(f_box)
 
-    # 4) Combine trajectory + curvature-zone bands + rivet-band boxes
+    # 3) Combine trajectory + rivet-band boxes
     f_min = field.add("Min")
-    field.setNumbers(f_min, "FieldsList", [f_th_traj, *curvature_boxes, *rivet_band_boxes])
+    field.setNumbers(f_min, "FieldsList", [f_th_traj, *rivet_band_boxes])
 
     field.setAsBackgroundMesh(f_min)
 
