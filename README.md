@@ -72,10 +72,17 @@ Le script `grande_echelle/scripts/calibrer_bandes_depuis_rivet.py` fait le pont 
 - `grande_echelle/quasi_static.py` : solveur quasi-statique + phase-field global
 - `grande_echelle/scripts/calibrer_bandes_depuis_rivet.py` : calibration bandes depuis `rivet/`
 - `rivet/rivet.py` : modele local/intermediaire phase-field + export preset bandes
-- `vis_rivet/vis_rivet.py` : script local plus visuel/experimental (validation qualitative)
-- `run_rivets_ab.py` : wrapper CLI optionnel pour comparaison A/B (peut etre supprime si vous utilisez `grande_echelle/main.py` directement)
+- `vis_rivet/vis_rivet.py` : wrapper local minimal pour lancer le modele `rivet/` avec une CLI simple
 
 ## Workflow recommande (multi-echelles)
+
+### Chemin TD (3 commandes)
+
+```bash
+python grande_echelle/mesh.py
+python grande_echelle/scripts/calibrer_bandes_depuis_rivet.py --run-local
+python grande_echelle/main.py
+```
 
 ### A. Generer / verifier le maillage grande echelle
 
@@ -122,18 +129,12 @@ Le preset peut toujours etre force explicitement depuis Python si besoin.
 from grande_echelle.main import creer_config, lancer_calcul
 
 cfg = creer_config(
-    rivet_bandes_preset_file="rivet/bandes_rivets_grande_echelle_calibre.json"
+    fichier_preset_bandes_rivets="rivet/bandes_rivets_grande_echelle_calibre.json"
 )
 lancer_calcul(cfg)
 ```
 
 ### D. Comparaison A/B avec / sans effet rivets
-
-```bash
-python run_rivets_ab.py --mode fast
-```
-
-ou depuis Python :
 
 ```python
 from grande_echelle.main import lancer_comparaison_rivets_rapide
@@ -142,19 +143,24 @@ lancer_comparaison_rivets_rapide()
 
 ## Parametres importants (grande echelle)
 
+Note compatibilite:
+
+- les anciens noms anglais des cles de configuration restent acceptes automatiquement,
+- mais le code utilise maintenant les noms francais comme reference.
+
 ### Contact / chargement iceberg
 
-- `iceberg_center_y`
-- `waterline_z`
-- `iceberg_depth_below_waterline`
+- `iceberg_centre_y`
+- `flottaison_z`
+- `iceberg_profondeur_sous_flottaison_m`
 - `iceberg_zone_x_debut_m`, `iceberg_zone_x_fin_m`
-- `iceberg_disp_peak`, `iceberg_disp_sign`
+- `deplacement_pic_iceberg`, `signe_deplacement_iceberg`
 - `sigma` (largeur spatiale du patch gaussien)
-- `iceberg_contact_t_start`, `iceberg_contact_t_end`
+- `iceberg_contact_t_debut`, `iceberg_contact_t_fin`
 
 Remarque importante :
 
-- la position verticale de l'appui iceberg est pilotee par `iceberg_depth_below_waterline`
+- la position verticale de l'appui iceberg est pilotee par `iceberg_profondeur_sous_flottaison_m`
 - plus cette valeur est grande, plus l'appui descend sur la coque
 - la configuration par defaut a ete ajustee pour charger plus bas (eviter la zone trop bombee)
 
@@ -162,8 +168,8 @@ Remarque importante :
 
 - `enable_global_phase_field`
 - `phase_field_gc_j_m2`, `phase_field_l0_m`
-- `phase_field_residual_stiffness`
-- `phase_field_split_traction_compression`
+- `phase_field_raideur_residuelle`
+- `phase_field_scinder_traction_compression`
 - `phase_field_seuil_nucleation_j_m3`
 - `phase_field_mise_a_jour_tous_les_n_pas`
 
@@ -171,11 +177,11 @@ Remarque importante :
 
 - `utiliser_bandes_rivets_z`
 - `bandes_rivets_z`
-- `rivet_bandes_preset_file`
+- `fichier_preset_bandes_rivets`
 
 ## Sorties importantes
 
-### Grande echelle (`results/<case_name>/`)
+### Grande echelle (`results/<nom_cas>/`)
 
 - `run_metadata.json` : config du run + metadonnees
 - `quasi_static/monitor.csv` : indicateurs (deplacement max, dommage, temps de calcul)
@@ -186,14 +192,14 @@ Remarque importante :
 
 Pour voir deformation + endommagement en meme temps :
 
-1. ouvrir `results/<case_name>/quasi_static/displacement.pvd`
-2. ouvrir `results/<case_name>/quasi_static/damage.pvd`
+1. ouvrir `results/<nom_cas>/quasi_static/displacement.pvd`
+2. ouvrir `results/<nom_cas>/quasi_static/damage.pvd`
 3. afficher `damage` sur la coque
 4. appliquer `Warp By Vector` avec le champ de deplacement (optionnel)
 
 Pour verifier les bandes rivets :
 
-- ouvrir `results/<case_name>/local_frame/material_fields.pvd`
+- ouvrir `results/<nom_cas>/local_frame/material_fields.pvd`
 - regarder `GcFactorBandes`, `RivetBandsMask`, `RivetBandsMaskViz`
 
 Note :

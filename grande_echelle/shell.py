@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import Any
 
 import basix
 import numpy as np
@@ -6,18 +9,22 @@ import ufl
 from dolfinx import fem
 
 
+# ============================================================================
+# OUTILS GEOMETRIE / CHAMPS
+# ============================================================================
+
 def _normalize(v):
     return v / ufl.sqrt(ufl.dot(v, v))
 
 
 def _local_frame(domain):
-    t = ufl.Jacobian(domain)
+    jac = ufl.Jacobian(domain)
     if domain.geometry.dim == 2:
-        t1 = ufl.as_vector([t[0, 0], t[1, 0], 0])
-        t2 = ufl.as_vector([t[0, 1], t[1, 1], 0])
+        t1 = ufl.as_vector([jac[0, 0], jac[1, 0], 0])
+        t2 = ufl.as_vector([jac[0, 1], jac[1, 1], 0])
     else:
-        t1 = ufl.as_vector([t[0, 0], t[1, 0], t[2, 0]])
-        t2 = ufl.as_vector([t[0, 1], t[1, 1], t[2, 1]])
+        t1 = ufl.as_vector([jac[0, 0], jac[1, 0], jac[2, 0]])
+        t2 = ufl.as_vector([jac[0, 1], jac[1, 1], jac[2, 1]])
 
     e3 = _normalize(ufl.cross(t1, t2))
     ey = ufl.as_vector([0, 1, 0])
@@ -29,19 +36,23 @@ def _local_frame(domain):
     return e1, e2, e3
 
 
-def _make_dg0_scalar_function(domain, name: str, value: float):
+def _creer_champ_scalaire_dg0(domain, name: str, value: float):
     V0 = fem.functionspace(domain, ("DG", 0))
     field = fem.Function(V0, name=name)
     field.x.array[:] = value
     return field
 
 
-def _bandes_rivets_rectangles(bandes_cfg):
-    """Convertit les bandes rivets (format courant) en rectangles (x,z)."""
+# ============================================================================
+# BANDES RIVETS
+# ============================================================================
+
+def _rectangles_bandes_rivets(bandes_cfg):
     rectangles = []
     for bande in bandes_cfg:
         if "x_centre_m" not in bande:
             raise ValueError("Each rivet band must define 'x_centre_m'")
+
         xc = float(bande["x_centre_m"])
         largeur_x = float(bande.get("largeur_x_m", 0.30))
         xmin = xc - 0.5 * largeur_x
@@ -56,13 +67,13 @@ def _bandes_rivets_rectangles(bandes_cfg):
     return rectangles
 
 
-def _interpolate_bandes_rectangles(domain, bandes_cfg, space, name: str, default: float, value_from_band):
+def _interpoler_bandes_rectangles(domain, bandes_cfg, space, name: str, default: float, value_from_band):
     field = fem.Function(space, name=name)
     field.x.array[:] = default
     if not bandes_cfg:
         return field
 
-    bandes = _bandes_rivets_rectangles(bandes_cfg)
+    bandes = _rectangles_bandes_rivets(bandes_cfg)
     for bande, rect in zip(bandes_cfg, bandes):
         rect["valeur"] = float(value_from_band(bande))
 
@@ -71,13 +82,13 @@ def _interpolate_bandes_rectangles(domain, bandes_cfg, space, name: str, default
         z = x[2]
         out = np.full_like(z, float(default), dtype=float)
         for bande in bandes:
-            masque = (
+            mask = (
                 (z >= bande["zmin"])
                 & (z <= bande["zmax"])
                 & (xcoord >= bande["xmin"])
                 & (xcoord <= bande["xmax"])
             )
-            out[masque] = bande["valeur"]
+            out[mask] = bande["valeur"]
         return out
 
     field.interpolate(values)
@@ -86,7 +97,7 @@ def _interpolate_bandes_rectangles(domain, bandes_cfg, space, name: str, default
 
 def _champ_facteur_bandes_rivets(domain, bandes_cfg, nom_facteur: str, default: float = 1.0):
     V0 = fem.functionspace(domain, ("DG", 0))
-    return _interpolate_bandes_rectangles(
+    return _interpoler_bandes_rectangles(
         domain,
         bandes_cfg,
         V0,
@@ -97,49 +108,47 @@ def _champ_facteur_bandes_rivets(domain, bandes_cfg, nom_facteur: str, default: 
 
 
 def _champ_masque_bandes_rivets(domain, bandes_cfg):
-    """Masque DG0: 1 dans les bandes rivets homogenisees, 0 ailleurs."""
     V0 = fem.functionspace(domain, ("DG", 0))
-    return _interpolate_bandes_rectangles(
+    return _interpoler_bandes_rectangles(
         domain,
         bandes_cfg,
         V0,
         name="RivetBandsMask",
         default=0.0,
-        value_from_band=lambda bande: 1.0,
+        value_from_band=lambda _: 1.0,
     )
 
 
 def _champ_masque_bandes_rivets_viz(domain, bandes_cfg):
-    """Masque de visualisation (CG1) pour ParaView, plus lisible que DG0."""
     Vviz = fem.functionspace(domain, ("CG", 1))
-    return _interpolate_bandes_rectangles(
+    return _interpoler_bandes_rectangles(
         domain,
         bandes_cfg,
         Vviz,
         name="RivetBandsMaskViz",
         default=0.0,
-        value_from_band=lambda bande: 1.0,
+        value_from_band=lambda _: 1.0,
     )
 
 
-def _build_material_fields(domain, cell_tags, cfg):
-    """
-    Champs matériaux par cellules (coque + bande rivets via tags).
-    Gardé ici pour rendre le modèle coque plus autoportant.
-    """
-    E = _make_dg0_scalar_function(domain, "YoungModulus", cfg.shell_young_modulus)
-    nu = _make_dg0_scalar_function(domain, "PoissonRatio", cfg.shell_poisson_ratio)
-    thick = _make_dg0_scalar_function(domain, "Thickness", cfg.shell_thickness)
+# ============================================================================
+# BUILDERS MODELE COQUE
+# ============================================================================
+
+def _construire_champs_materiaux(domain, cell_tags, cfg):
+    E = _creer_champ_scalaire_dg0(domain, "YoungModulus", cfg.young_coque)
+    nu = _creer_champ_scalaire_dg0(domain, "PoissonRatio", cfg.poisson_coque)
+    thick = _creer_champ_scalaire_dg0(domain, "Thickness", cfg.epaisseur_coque)
 
     if cell_tags is not None:
-        rivet_cells = cell_tags.find(cfg.rivet_cell_tag)
+        rivet_cells = cell_tags.find(cfg.tag_cellule_rivet)
         if rivet_cells is not None and len(rivet_cells) > 0:
-            E.x.array[rivet_cells] = cfg.rivet_young_modulus
-            nu.x.array[rivet_cells] = cfg.rivet_poisson_ratio
-            thick.x.array[rivet_cells] = cfg.rivet_thickness
+            E.x.array[rivet_cells] = cfg.young_rivet
+            nu.x.array[rivet_cells] = cfg.poisson_rivet
+            thick.x.array[rivet_cells] = cfg.epaisseur_rivet
 
-    if getattr(cfg, "utiliser_bandes_rivets_z", False):
-        bandes = list(getattr(cfg, "bandes_rivets_z", []))
+    if cfg.utiliser_bandes_rivets_z:
+        bandes = list(cfg.bandes_rivets_z)
         facteur_E = _champ_facteur_bandes_rivets(domain, bandes, "facteur_E", 1.0)
         facteur_t = _champ_facteur_bandes_rivets(domain, bandes, "facteur_epaisseur", 1.0)
         E.x.array[:] *= facteur_E.x.array
@@ -148,20 +157,19 @@ def _build_material_fields(domain, cell_tags, cfg):
     return E, nu, thick
 
 
-def _build_local_basis_fields(domain, gdim):
-    """Base locale (e1, e2, e3) interpolee sur un espace DG0 vectoriel."""
+def _construire_base_locale(domain, gdim):
     VT = fem.functionspace(domain, ("DG", 0, (gdim,)))
     V0, _ = VT.sub(0).collapse()
     frame_expr = _local_frame(domain)
+
     basis_vectors = [fem.Function(VT, name=f"Basis_vector_e{i+1}") for i in range(gdim)]
     for i in range(gdim):
-        e_exp = fem.Expression(frame_expr[i], V0.element.interpolation_points)
-        basis_vectors[i].interpolate(e_exp)
+        e_expr = fem.Expression(frame_expr[i], V0.element.interpolation_points)
+        basis_vectors[i].interpolate(e_expr)
     return basis_vectors
 
 
-def _build_shell_spaces(domain, gdim):
-    """Espaces EF du modele de coque (deplacement + rotation + dommage)."""
+def _construire_espaces_coque(domain, gdim):
     Ue = basix.ufl.element("P", domain.basix_cell(), 2, shape=(gdim,))
     Te = basix.ufl.element("CR", domain.basix_cell(), 1, shape=(gdim,))
     V = fem.functionspace(domain, basix.ufl.mixed_element([Ue, Te]))
@@ -171,80 +179,84 @@ def _build_shell_spaces(domain, gdim):
     return V, Vu, Vtheta, Vd
 
 
-def _build_boundary_conditions(V, Vu, Vtheta, facets, cfg):
-    """Conditions aux limites encastrees sur les bords tagges."""
-    edge_tags = [cfg.left_facet_tag, cfg.right_facet_tag]
-    if cfg.clamp_all_edges:
-        edge_tags.extend([cfg.bottom_facet_tag, cfg.top_facet_tag])
+def _construire_conditions_limites(V, Vu, Vtheta, facets, cfg):
+    edge_tags = [cfg.tag_facet_gauche, cfg.tag_facet_droite]
+    if cfg.encastrer_tous_bords:
+        edge_tags.extend([cfg.tag_facet_bas, cfg.tag_facet_haut])
     edge_tags = list(dict.fromkeys(edge_tags))
 
     uD = fem.Function(Vu)
     thetaD = fem.Function(Vtheta)
     bcs = []
+
     for facet_tag in edge_tags:
         tagged_facets = facets.find(facet_tag)
         disp_dofs = fem.locate_dofs_topological((V.sub(0), Vu), 1, tagged_facets)
         bcs.append(fem.dirichletbc(uD, disp_dofs, V.sub(0)))
-        if cfg.clamp_rotations:
+
+        if cfg.encastrer_rotations:
             rot_dofs = fem.locate_dofs_topological((V.sub(1), Vtheta), 1, tagged_facets)
             bcs.append(fem.dirichletbc(thetaD, rot_dofs, V.sub(1)))
+
     return bcs
 
 
 @dataclass
-class ShellModel:
-    domain: any
-    facets: any
+class ModeleCoque:
+    domain: Any
+    facets: Any
     gdim: int
     tdim: int
-    V: any
-    Vu: any
-    Vtheta: any
-    Vd: any
-    v: any
-    u_test: any
-    a: any
+    V: Any
+    Vu: Any
+    Vtheta: Any
+    Vd: Any
+    v: Any
+    u_test: Any
+    a: Any
     bcs: list
-    e1: any
-    e2: any
-    e3: any
-    E_field: any
-    nu_field: any
-    thick_field: any
-    gc_factor_field: any
-    rivet_bands_mask_field: any
-    rivet_bands_mask_viz_field: any
-    damage_state: any
+    e1: Any
+    e2: Any
+    e3: Any
+    E_field: Any
+    nu_field: Any
+    thick_field: Any
+    gc_factor_field: Any
+    rivet_bands_mask_field: Any
+    rivet_bands_mask_viz_field: Any
+    damage_state: Any
 
 
-def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
-    # ------------------------------------------------------------
-    # 1) Geometrie / champs materiaux
-    # ------------------------------------------------------------
-    gdim = domain.geometry.dim
-    tdim = domain.topology.dim
+# ============================================================================
+# MODELE COQUE (pipeline lisible type TD)
+# ============================================================================
+
+def construire_modele_coque(domain, cell_tags, facets, cfg) -> ModeleCoque:
     if facets is None:
         raise ValueError(
             "Facet tags are required to build shell boundary conditions, but facet_tags is None. "
             "Regenerate the mesh with physical groups on boundary facets/edges."
         )
 
-    E, nu, thick = _build_material_fields(domain, cell_tags, cfg)
+    # 1) Champs materiaux
+    gdim = domain.geometry.dim
+    tdim = domain.topology.dim
+    E, nu, thick = _construire_champs_materiaux(domain, cell_tags, cfg)
+
     lmbda = E * nu / (1 + nu) / (1 - 2 * nu)
     mu = E / 2 / (1 + nu)
     lmbda_ps = 2 * lmbda * mu / (lmbda + 2 * mu)
 
-    # Base locale + espaces EF (organisation proche d'un TD)
-    e1, e2, e3 = _build_local_basis_fields(domain, gdim)
-    V, Vu, Vtheta, Vd = _build_shell_spaces(domain, gdim)
+    # 2) Base locale + espaces + inconnues
+    e1, e2, e3 = _construire_base_locale(domain, gdim)
+    V, Vu, Vtheta, Vd = _construire_espaces_coque(domain, gdim)
 
     v = fem.Function(V)
     u, theta = ufl.split(v)
     v_test = ufl.TestFunction(V)
-    u_test, theta_test = ufl.split(v_test)
+    u_test, _ = ufl.split(v_test)
     dv = ufl.TrialFunction(V)
 
-    # Matrice 3x2 de projection sur le plan tangent local [e1 e2]
     P_plane = ufl.as_matrix(
         [
             [e1[0], e2[0]],
@@ -254,12 +266,9 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
     )
 
     def t_grad(field):
-        grad_field = ufl.grad(field)
-        return ufl.dot(grad_field, P_plane)
+        return ufl.dot(ufl.grad(field), P_plane)
 
-    # ------------------------------------------------------------
-    # 2) Cinematique coque (membrane / flexion / cisaillement)
-    # ------------------------------------------------------------
+    # 3) Cinematique coque
     t_gu = ufl.dot(P_plane.T, t_grad(u))
     eps = ufl.sym(t_gu)
     beta = ufl.cross(e3, theta)
@@ -273,40 +282,34 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
     def plane_stress_elasticity(strain):
         return lmbda_ps * ufl.tr(strain) * ufl.Identity(tdim) + 2 * mu * strain
 
-    # Efforts generalises coque
     N = thick * plane_stress_elasticity(eps)
     M = thick**3 / 12 * plane_stress_elasticity(kappa)
     Q = mu * thick * gamma
 
-    # Stabilisation drilling rotation (forme simple)
     drilling_strain = (t_gu[0, 1] - t_gu[1, 0]) / 2 + ufl.dot(theta, e3)
     drilling_strain_test = ufl.replace(drilling_strain, {v: v_test})
     h_mesh = ufl.CellDiameter(domain)
     drilling_stiffness = E * thick**3 / h_mesh**2
     drilling_stress = drilling_stiffness * drilling_strain
 
+    # 4) Couplage dommage global
     damage_state = fem.Function(Vd, name="DamageState")
     damage_state.x.array[:] = 0.0
-    if getattr(cfg, "utiliser_bandes_rivets_z", False):
-        bandes_gc = list(getattr(cfg, "bandes_rivets_z", []))
-    else:
-        bandes_gc = []
+
+    bandes_gc = list(cfg.bandes_rivets_z) if cfg.utiliser_bandes_rivets_z else []
     gc_factor_field = _champ_facteur_bandes_rivets(domain, bandes_gc, "facteur_Gc", 1.0)
     rivet_bands_mask_field = _champ_masque_bandes_rivets(domain, bandes_gc)
     rivet_bands_mask_viz_field = _champ_masque_bandes_rivets_viz(domain, bandes_gc)
+
     k_res_mech = fem.Constant(
         domain,
-        cfg.phase_field_residual_stiffness if cfg.enable_global_phase_field else 0.0,
+        cfg.phase_field_raideur_residuelle if cfg.activer_phase_field_global else 0.0,
     )
     degradation = (1.0 - damage_state) ** 2 + k_res_mech
 
-    # ------------------------------------------------------------
-    # 3) Conditions aux limites
-    # ------------------------------------------------------------
-    bcs = _build_boundary_conditions(V, Vu, Vtheta, facets, cfg)
+    # 5) CL + forme variationnelle
+    bcs = _construire_conditions_limites(V, Vu, Vtheta, facets, cfg)
 
-    # Couplage staggered avec le phase-field global :
-    # la rigidite mecanique est degradee par le dommage courant.
     Wdef = (
         degradation
         * (
@@ -318,7 +321,7 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
     ) * ufl.dx
     a = ufl.derivative(Wdef, v, dv)
 
-    return ShellModel(
+    return ModeleCoque(
         domain=domain,
         facets=facets,
         gdim=gdim,
@@ -342,3 +345,8 @@ def build_shell_model(domain, cell_tags, facets, cfg) -> ShellModel:
         rivet_bands_mask_viz_field=rivet_bands_mask_viz_field,
         damage_state=damage_state,
     )
+
+
+# Alias de compatibilite
+ShellModel = ModeleCoque
+build_shell_model = construire_modele_coque
