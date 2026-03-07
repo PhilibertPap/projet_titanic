@@ -14,7 +14,7 @@
     },
     {
       "nom": "bande_x_02",
-      "x_centre_m": 190.10714285714286,
+      "x_centre_m": 185.39545454545456,
       "largeur_x_m": 0.3,
       "z_min_m": -10.2,
       "z_max_m": 0.2,
@@ -24,7 +24,7 @@
     },
     {
       "nom": "bande_x_03",
-      "x_centre_m": 203.06428571428572,
+      "x_centre_m": 193.6409090909091,
       "largeur_x_m": 0.3,
       "z_min_m": -10.2,
       "z_max_m": 0.2,
@@ -34,7 +34,7 @@
     },
     {
       "nom": "bande_x_04",
-      "x_centre_m": 216.0214285714286,
+      "x_centre_m": 201.88636363636365,
       "largeur_x_m": 0.3,
       "z_min_m": -10.2,
       "z_max_m": 0.2,
@@ -44,7 +44,7 @@
     },
     {
       "nom": "bande_x_05",
-      "x_centre_m": 228.97857142857146,
+      "x_centre_m": 210.1318181818182,
       "largeur_x_m": 0.3,
       "z_min_m": -10.2,
       "z_max_m": 0.2,
@@ -54,7 +54,7 @@
     },
     {
       "nom": "bande_x_06",
-      "x_centre_m": 241.9357142857143,
+      "x_centre_m": 218.37727272727275,
       "largeur_x_m": 0.3,
       "z_min_m": -10.2,
       "z_max_m": 0.2,
@@ -64,7 +64,7 @@
     },
     {
       "nom": "bande_x_07",
-      "x_centre_m": 254.89285714285717,
+      "x_centre_m": 226.62272727272727,
       "largeur_x_m": 0.3,
       "z_min_m": -10.2,
       "z_max_m": 0.2,
@@ -74,6 +74,46 @@
     },
     {
       "nom": "bande_x_08",
+      "x_centre_m": 234.86818181818182,
+      "largeur_x_m": 0.3,
+      "z_min_m": -10.2,
+      "z_max_m": 0.2,
+      "facteur_E": 0.98,
+      "facteur_epaisseur": 1.0,
+      "facteur_Gc": 0.5
+    },
+    {
+      "nom": "bande_x_09",
+      "x_centre_m": 243.11363636363637,
+      "largeur_x_m": 0.3,
+      "z_min_m": -10.2,
+      "z_max_m": 0.2,
+      "facteur_E": 0.98,
+      "facteur_epaisseur": 1.0,
+      "facteur_Gc": 0.5
+    },
+    {
+      "nom": "bande_x_10",
+      "x_centre_m": 251.35909090909092,
+      "largeur_x_m": 0.3,
+      "z_min_m": -10.2,
+      "z_max_m": 0.2,
+      "facteur_E": 0.98,
+      "facteur_epaisseur": 1.0,
+      "facteur_Gc": 0.5
+    },
+    {
+      "nom": "bande_x_11",
+      "x_centre_m": 259.6045454545455,
+      "largeur_x_m": 0.3,
+      "z_min_m": -10.2,
+      "z_max_m": 0.2,
+      "facteur_E": 0.98,
+      "facteur_epaisseur": 1.0,
+      "facteur_Gc": 0.5
+    },
+    {
+      "nom": "bande_x_12",
       "x_centre_m": 267.85,
       "largeur_x_m": 0.3,
       "z_min_m": -10.2,

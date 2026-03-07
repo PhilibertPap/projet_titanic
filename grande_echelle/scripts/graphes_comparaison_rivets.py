@@ -8,6 +8,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+LABEL_FRAC_D95 = "part zone tres endommagee (d >= 0.95)"
+
 
 @dataclass
 class Suivi:
@@ -80,11 +82,11 @@ def tracer_dommages(avec: Suivi, sans: Suivi, outdir: Path):
     axes[0].grid(True, alpha=0.3)
     axes[0].legend()
 
-    axes[1].plot(avec.time, avec.mean_damage, linewidth=2.2, label=f"{avec.label} mean")
-    axes[1].plot(sans.time, sans.mean_damage, linewidth=2.2, label=f"{sans.label} mean")
-    axes[1].plot(avec.time, avec.frac_d95, "--", linewidth=2.0, label=f"{avec.label} frac>=0.95")
-    axes[1].plot(sans.time, sans.frac_d95, "--", linewidth=2.0, label=f"{sans.label} frac>=0.95")
-    axes[1].set_title("mean_damage et frac_damage_ge_095")
+    axes[1].plot(avec.time, avec.mean_damage, linewidth=2.2, label=f"{avec.label} dommage moyen")
+    axes[1].plot(sans.time, sans.mean_damage, linewidth=2.2, label=f"{sans.label} dommage moyen")
+    axes[1].plot(avec.time, avec.frac_d95, "--", linewidth=2.0, label=f"{avec.label} {LABEL_FRAC_D95}")
+    axes[1].plot(sans.time, sans.frac_d95, "--", linewidth=2.0, label=f"{sans.label} {LABEL_FRAC_D95}")
+    axes[1].set_title("Dommage moyen et zone tres endommagee")
     axes[1].set_xlabel("Temps")
     axes[1].set_ylabel("Niveau dommage")
     axes[1].set_ylim(-0.02, 1.02)
@@ -92,6 +94,33 @@ def tracer_dommages(avec: Suivi, sans: Suivi, outdir: Path):
     axes[1].legend(fontsize=8)
 
     _save(fig, outdir / "comparaison_dommages.png")
+
+
+def tracer_ecarts_dommages(avec: Suivi, sans: Suivi, outdir: Path):
+    grille = _grille_temps_commune(avec, sans)
+    delta_max = _interp(grille, avec.time, avec.max_damage) - _interp(grille, sans.time, sans.max_damage)
+    delta_mean = _interp(grille, avec.time, avec.mean_damage) - _interp(grille, sans.time, sans.mean_damage)
+    delta_frac = _interp(grille, avec.time, avec.frac_d95) - _interp(grille, sans.time, sans.frac_d95)
+
+    fig, axes = plt.subplots(3, 1, figsize=(9.5, 8.8), sharex=True)
+    axes[0].plot(grille, delta_max, linewidth=2.0)
+    axes[0].axhline(0.0, color="k", linewidth=1.0, alpha=0.5)
+    axes[0].set_ylabel("Delta max damage")
+    axes[0].set_title("Ecarts temporels (avec - sans rivets)")
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].plot(grille, delta_mean, linewidth=2.0)
+    axes[1].axhline(0.0, color="k", linewidth=1.0, alpha=0.5)
+    axes[1].set_ylabel("Delta dommage moyen")
+    axes[1].grid(True, alpha=0.3)
+
+    axes[2].plot(grille, delta_frac, linewidth=2.0)
+    axes[2].axhline(0.0, color="k", linewidth=1.0, alpha=0.5)
+    axes[2].set_ylabel(f"Delta {LABEL_FRAC_D95}")
+    axes[2].set_xlabel("Temps")
+    axes[2].grid(True, alpha=0.3)
+
+    _save(fig, outdir / "ecarts_temporels_dommages.png")
 
 
 def tracer_deplacement(avec: Suivi, sans: Suivi, outdir: Path):
@@ -143,8 +172,8 @@ def ecrire_resume(avec: Suivi, sans: Suivi, outdir: Path):
     grille = _grille_temps_commune(avec, sans)
     dmean_avec = _interp(grille, avec.time, avec.mean_damage)
     dmean_sans = _interp(grille, sans.time, sans.mean_damage)
-    auc_avec = float(np.trapz(dmean_avec, grille))
-    auc_sans = float(np.trapz(dmean_sans, grille))
+    auc_avec = float(np.trapezoid(dmean_avec, grille))
+    auc_sans = float(np.trapezoid(dmean_sans, grille))
 
     lignes = []
     lignes.append(f"avec={avec.source}")
@@ -217,6 +246,7 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
 
     tracer_dommages(avec, sans, outdir)
+    tracer_ecarts_dommages(avec, sans, outdir)
     tracer_deplacement(avec, sans, outdir)
     tracer_trajectoire_u_d(avec, sans, outdir)
     tracer_couts(avec, sans, outdir)

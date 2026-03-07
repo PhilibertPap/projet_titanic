@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover - script execution fallback
 # ============================================================================
 
 def _bandes_rivets_par_defaut(x_debut: float, x_fin: float) -> list[dict]:
-    n_bandes = 6
+    n_bandes = 10
     largeur_x = 0.30
     x_margin = 0.5 * largeur_x
     x_centres = np.linspace(x_debut + x_margin, x_fin - x_margin, n_bandes)
