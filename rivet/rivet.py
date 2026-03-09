@@ -20,19 +20,19 @@ def config_par_defaut() -> dict:
         "L": 0.5,
         "W": 0.2,
         "H": 0.01,
-        "r": 0.02,
+        "r": 0.0165,
         "lc_fine": 0.003,
         "lc_coarse": 0.01,
         # Materiau / phase-field AT1 (inchange)
-        "E": 200e9,
+        "E": 190e9,
         "nu": 0.3,
-        "Gc": 3.0e3,
+        "Gc": 2400,
         "l0": 0.005,
         "k_ell": 1e-6,
         "eps_stab_factor": 1e-8,
         # Chargement / temps
         "steps": 100,
-        "max_traction": 300e6,
+        "max_traction": 100e6,
         "max_iter": 10,
         "tol": 1e-4,
         # Sorties
