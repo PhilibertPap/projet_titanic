@@ -25,9 +25,6 @@ def _calibrate_factors_from_summary(
     summary: dict,
     *,
     reference_rupture_traction_pa: float,
-    facteur_gc_min: float,
-    facteur_gc_max: float,
-    facteur_gc_exponent: float,
     facteur_e: float,
     facteur_epaisseur: float,
 ) -> dict:
@@ -37,19 +34,16 @@ def _calibrate_factors_from_summary(
         traction = summary.get("last_traction_pa", 0.0)
     traction = float(traction)
 
-    # Heuristic bridge local -> global: use rupture traction ratio as a proxy for
-    # local fracture resistance and map it to an effective Gc factor.
     ratio = traction / max(reference_rupture_traction_pa, 1.0)
-    facteur_gc = float(np.clip(ratio ** facteur_gc_exponent, facteur_gc_min, facteur_gc_max))
 
     return {
         "rupture_detected": rupture_detected,
         "rupture_traction_pa": traction,
+        "Gc_local_J_m2": float(summary.get("config", {}).get("Gc", 0.0) or 0.0),
         "reference_rupture_traction_pa": float(reference_rupture_traction_pa),
         "ratio_rupture": float(ratio),
         "facteur_E": float(facteur_e),
         "facteur_epaisseur": float(facteur_epaisseur),
-        "facteur_Gc": facteur_gc,
     }
 
 
@@ -59,9 +53,6 @@ def main():
     parser.add_argument("--run-local", action="store_true", help="Lance d'abord le calcul local rivet")
     parser.add_argument("--output", type=str, default="rivet/bandes_rivets_grande_echelle_calibre.json")
     parser.add_argument("--reference-rupture-mpa", type=float, default=250.0)
-    parser.add_argument("--gc-min", type=float, default=0.5)
-    parser.add_argument("--gc-max", type=float, default=1.2)
-    parser.add_argument("--gc-exponent", type=float, default=2.0)
     parser.add_argument("--facteur-e", type=float, default=0.98)
     parser.add_argument("--facteur-epaisseur", type=float, default=1.0)
     parser.add_argument("--x-start", type=float, default=177.0)
@@ -90,12 +81,23 @@ def main():
     factors = _calibrate_factors_from_summary(
         summary,
         reference_rupture_traction_pa=args.reference_rupture_mpa * 1e6,
-        facteur_gc_min=args.gc_min,
-        facteur_gc_max=args.gc_max,
-        facteur_gc_exponent=args.gc_exponent,
         facteur_e=args.facteur_e,
         facteur_epaisseur=args.facteur_epaisseur,
     )
+
+    preset_metadata = {
+        "source": "rivet_local",
+        "source_summary": {
+            "Gc_local_J_m2": float(factors["Gc_local_J_m2"]),
+            "rupture_traction_pa": float(factors["rupture_traction_pa"]),
+            "ratio_rupture": float(factors["ratio_rupture"]),
+        },
+        "global_mapping": {
+            "facteur_E": float(factors["facteur_E"]),
+            "facteur_epaisseur": float(factors["facteur_epaisseur"]),
+            "Gc_bandes_J_m2": float(factors["Gc_local_J_m2"]),
+        },
+    }
 
     preset_path = creer_preset_bandes_grande_echelle(
         path=args.output,
@@ -107,21 +109,13 @@ def main():
         z_max_m=args.z_max,
         facteur_E=factors["facteur_E"],
         facteur_epaisseur=factors["facteur_epaisseur"],
-        facteur_Gc=factors["facteur_Gc"],
+        gc_bandes_j_m2=factors["Gc_local_J_m2"],
+        metadata=preset_metadata,
     )
-
-    calib_report = {
-        "source_summary": summary,
-        "calibrated_factors": factors,
-        "preset_path": str(preset_path),
-    }
-    report_path = Path(preset_path).with_suffix(".calibration.json")
-    report_path.write_text(json.dumps(calib_report, indent=2), encoding="utf-8")
 
     print("Calibration terminee")
     print(json.dumps(factors, indent=2))
     print(f"Preset bandes: {preset_path}")
-    print(f"Rapport calibration: {report_path}")
 
 
 if __name__ == "__main__":

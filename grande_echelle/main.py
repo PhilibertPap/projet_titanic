@@ -73,13 +73,13 @@ def config_par_defaut() -> dict:
         "facteur_rayon_patch_iceberg": 3.0,
         # Temps / monitoring
         "temps_final": 8.5,
-        "nombre_pas": 160,
+        "nombre_pas": 96,
         "temps_relatifs": None,
-        "vtk_tous_les_n_pas": 2,
-        "console_tous_les_n_pas": 2,
-        "ecrire_sorties_base_locale": True,
-        "ecrire_vtk_rotation": True,
-        "ecrire_vtk_endommagement": True,
+        "vtk_tous_les_n_pas": 8,
+        "console_tous_les_n_pas": 4,
+        "ecrire_sorties_base_locale": False,
+        "ecrire_vtk_rotation": False,
+        "ecrire_vtk_endommagement": False,
         "ecrire_vtk_endommagement_si_desactive": False,
         # CL tags
         "tag_facet_gauche": 1,
@@ -104,11 +104,11 @@ def config_par_defaut() -> dict:
         "activer_phase_field_global": True,
         "phase_field_utiliser_preset_selectionne": False,
         "phase_field_gc_j_m2": 7000.0,
-        "phase_field_l0_m": 0.15,
+        "phase_field_l0_m": 0.20,
         "phase_field_raideur_residuelle": 1e-6,
         "phase_field_scinder_traction_compression": True,
         "phase_field_seuil_nucleation_j_m3": 8.0e4,
-        "phase_field_mise_a_jour_tous_les_n_pas": 1,
+        "phase_field_mise_a_jour_tous_les_n_pas": 2,
         "phase_field_utiliser_snes_vi": False,
         "phase_field_nb_iters_alternance": 6,
         "phase_field_nb_iters_min_alternance": 1,
@@ -310,16 +310,20 @@ def config_etude_rivets(with_rivets: bool, base=None):
 def config_etude_rivets_rapide(with_rivets: bool = True):
     base = creer_config(
         nom_cas="rivets_rapide",
-        nombre_pas=20,
-        vtk_tous_les_n_pas=1,
+        nombre_pas=14,
+        vtk_tous_les_n_pas=6,
         console_tous_les_n_pas=2,
         deplacement_pic_iceberg=2.5e-2,
         temps_relatifs=[
-            0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
-            0.50, 0.56, 0.62, 0.68, 0.74, 0.80, 0.86, 0.92, 0.96, 1.0,
+            0.0, 0.08, 0.16, 0.24, 0.32, 0.40, 0.48,
+            0.56, 0.64, 0.72, 0.80, 0.88, 0.95, 1.0,
         ],
-        phase_field_mise_a_jour_tous_les_n_pas=1,
-        iceberg_dx_max_par_pas_m=1.0,
+        ecrire_sorties_base_locale=False,
+        ecrire_vtk_rotation=False,
+        ecrire_vtk_endommagement=False,
+        phase_field_l0_m=0.20,
+        phase_field_mise_a_jour_tous_les_n_pas=2,
+        iceberg_dx_max_par_pas_m=2.0,
     )
     return config_etude_rivets(with_rivets=with_rivets, base=base)
 
@@ -327,18 +331,22 @@ def config_etude_rivets_rapide(with_rivets: bool = True):
 def config_etude_rivets_production(with_rivets: bool = True):
     base = creer_config(
         nom_cas="titanic_rivets_production",
-        nombre_pas=36,
-        vtk_tous_les_n_pas=1,
-        console_tous_les_n_pas=3,
+        nombre_pas=24,
+        vtk_tous_les_n_pas=8,
+        console_tous_les_n_pas=4,
         deplacement_pic_iceberg=2.5e-2,
         temps_relatifs=[
-            0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
-            0.50, 0.54, 0.58, 0.62, 0.66, 0.70, 0.74, 0.78, 0.82, 0.86,
-            0.90, 0.94, 0.97, 1.0,
+            0.0, 0.06, 0.12, 0.18, 0.24, 0.30, 0.36, 0.42, 0.48, 0.54,
+            0.60, 0.66, 0.72, 0.78, 0.84, 0.89, 0.93, 0.96, 0.98, 1.0,
         ],
+        ecrire_sorties_base_locale=False,
+        ecrire_vtk_rotation=False,
+        ecrire_vtk_endommagement=False,
+        phase_field_l0_m=0.18,
+        phase_field_mise_a_jour_tous_les_n_pas=2,
         options_petsc_mecanique={"ksp_type": "preonly", "pc_type": "lu"},
         options_petsc_endommagement={"ksp_type": "preonly", "pc_type": "lu"},
-        iceberg_dx_max_par_pas_m=0.5,
+        iceberg_dx_max_par_pas_m=1.2,
     )
     return config_etude_rivets(with_rivets=with_rivets, base=base)
 
@@ -346,14 +354,15 @@ def config_etude_rivets_production(with_rivets: bool = True):
 def config_etude_rivets_screening(with_rivets: bool = True):
     base = creer_config(
         nom_cas="rivets_screening",
-        nombre_pas=16,
-        vtk_tous_les_n_pas=4,
+        nombre_pas=12,
+        vtk_tous_les_n_pas=8,
         console_tous_les_n_pas=4,
         ecrire_sorties_base_locale=False,
         ecrire_vtk_rotation=False,
         ecrire_vtk_endommagement=False,
-        phase_field_mise_a_jour_tous_les_n_pas=2,
-        iceberg_dx_max_par_pas_m=3.0,
+        phase_field_l0_m=0.22,
+        phase_field_mise_a_jour_tous_les_n_pas=3,
+        iceberg_dx_max_par_pas_m=4.0,
         deplacement_pic_iceberg=2.5e-2,
     )
     return config_etude_rivets(with_rivets=with_rivets, base=base)
@@ -452,21 +461,11 @@ def _charger_bandes_rivets_preset_si_disponible(cfg) -> None:
             print(f"Filtered rivet bands by x-range: kept {len(bandes_filtrees)}/{len(bandes)}")
         bandes = bandes_filtrees
 
-    if bool(cfg.uniformiser_facteur_gc_bandes):
-        calib_path = preset_path.with_name(f"{preset_path.stem}.calibration.json")
-        facteur_gc = None
-        if calib_path.exists():
-            try:
-                calib_data = json.loads(calib_path.read_text(encoding="utf-8"))
-                facteur_gc = calib_data.get("calibrated_factors", {}).get("facteur_Gc")
-            except Exception:
-                facteur_gc = None
-        if isinstance(facteur_gc, (int, float)):
-            facteur_gc = float(facteur_gc)
-            for bande in bandes:
-                bande["facteur_Gc"] = facteur_gc
-            if MPI.COMM_WORLD.rank == 0:
-                print(f"Uniformized facteur_Gc from petite echelle calibration: {facteur_gc:.6g}")
+    gc_global = float(cfg.phase_field_gc_j_m2)
+    for bande in bandes:
+        gc_bande = bande.get("Gc_J_m2")
+        if isinstance(gc_bande, (int, float)):
+            bande["facteur_Gc"] = float(gc_bande) / max(gc_global, 1e-12)
 
     cfg.bandes_rivets_z = bandes
     cfg.utiliser_bandes_rivets_z = True

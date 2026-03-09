@@ -147,24 +147,28 @@ def creer_preset_bandes_grande_echelle(
     facteur_E: float = 0.98,
     facteur_epaisseur: float = 1.00,
     facteur_Gc: float = 0.88,
+    gc_bandes_j_m2: float | None = None,
+    metadata: dict | None = None,
 ):
     """Ecrit un preset JSON simple pour grande_echelle (homogeneisation en bandes)."""
     x_margin = 0.5 * largeur_x_m
     x_centres = np.linspace(x_start_m + x_margin, x_end_m - x_margin, n_bandes_x)
     bandes_rivets = []
     for i_bande, x_centre in enumerate(x_centres, start=1):
-        bandes_rivets.append(
-            {
-                "nom": f"bande_x_{i_bande:02d}",
-                "x_centre_m": float(x_centre),
-                "largeur_x_m": float(largeur_x_m),
-                "z_min_m": float(z_min_m),
-                "z_max_m": float(z_max_m),
-                "facteur_E": float(facteur_E),
-                "facteur_epaisseur": float(facteur_epaisseur),
-                "facteur_Gc": float(facteur_Gc),
-            }
-        )
+        bande = {
+            "nom": f"bande_x_{i_bande:02d}",
+            "x_centre_m": float(x_centre),
+            "largeur_x_m": float(largeur_x_m),
+            "z_min_m": float(z_min_m),
+            "z_max_m": float(z_max_m),
+            "facteur_E": float(facteur_E),
+            "facteur_epaisseur": float(facteur_epaisseur),
+        }
+        if gc_bandes_j_m2 is not None:
+            bande["Gc_J_m2"] = float(gc_bandes_j_m2)
+        else:
+            bande["facteur_Gc"] = float(facteur_Gc)
+        bandes_rivets.append(bande)
 
     if path is None:
         path = Path(__file__).resolve().parent / "bandes_rivets_grande_echelle.json"
@@ -176,6 +180,8 @@ def creer_preset_bandes_grande_echelle(
         "origine": "template_simple_depuis_rivet_local",
         "bandes_rivets_z": bandes_rivets,
     }
+    if metadata:
+        payload["calibration"] = metadata
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(f"Preset grande_echelle ecrit : {path}")
     return path

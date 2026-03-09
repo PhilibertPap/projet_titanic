@@ -50,9 +50,9 @@ END_TAPER_MIN = 0.06
 
 # Mesh choice aimed at speed-first studies:
 # - keep a coarse global mesh
-# - keep a local refinement near the iceberg path and rivet bands
-N_SECTIONS_X = 9
-N_SECTION_PTS = 11
+# - keep a local refinement near the iceberg path and only the most relevant rivet bands
+N_SECTIONS_X = 8
+N_SECTION_PTS = 9
 
 # Iceberg trajectory (used only to define a mesh-refinement band)
 ICEBERG_CENTER_Y = -10.8    # m, starboard side (sign flipped)
@@ -65,30 +65,29 @@ ICEBERG_REFINEMENT_X_START = 180.0
 ICEBERG_REFINEMENT_X_END = 255.0
 
 # Mesh size field (refine around the iceberg trajectory band)
-SIZE_MIN = 0.20
-SIZE_MAX = 5.00
-DIST_MIN = 1.50
-DIST_MAX = 10.0
+SIZE_MIN = 0.35
+SIZE_MAX = 7.50
+DIST_MIN = 1.20
+DIST_MAX = 7.5
 
 # Local refinement to resolve homogenized rivet bands represented as vertical
 # strips (directed along z) and distributed regularly in x within the iceberg
 # impact zone.
-N_RIVET_STRIPS_X = 10
+N_RIVET_STRIPS_X = 4
 RIVET_STRIP_X_START = 177.0
 RIVET_STRIP_X_END = 252.0
 RIVET_STRIP_PHYSICAL_WIDTH_X = 0.35
 RIVET_STRIP_Z_MIN = -10.2
 RIVET_STRIP_Z_MAX = 0.2
-# Stronger refinement than the baseline is needed for 0.30 m strips to appear
-# as continuous bands on the shell surface (and not isolated CG1 spots).
-RIVET_STRIP_SIZE_MIN = 0.12
-RIVET_STRIP_SIZE_MAX = 2.00
-RIVET_STRIP_MARGIN_X = 0.45
-RIVET_STRIP_MARGIN_Y = 0.85
+# Use a moderate local refinement only around a subset of bands near the active zone.
+RIVET_STRIP_SIZE_MIN = 0.28
+RIVET_STRIP_SIZE_MAX = 3.50
+RIVET_STRIP_MARGIN_X = 0.25
+RIVET_STRIP_MARGIN_Y = 0.55
 
 # Sampling of the trajectory refinement curve: lower values = faster generation
 # adaptation along the curve.
-TRAJ_SAMPLING = 120
+TRAJ_SAMPLING = 64
 
 
 def _smoothstep(a: float, b: float, x: float) -> float:
@@ -263,8 +262,8 @@ def _add_mesh_size_field(occ) -> None:
     field.setNumber(f_th_traj, "DistMin", DIST_MIN)
     field.setNumber(f_th_traj, "DistMax", DIST_MAX)
 
-    # 2) Refinement around the 8 vertical homogenized rivet strips (same x-centers
-    # as grande_echelle/main.py default bands) in the iceberg passage zone.
+    # 2) Refinement around only a subset of homogenized rivet strips located in
+    # the most active part of the iceberg passage zone.
     rivet_band_boxes = []
     # For vertical rivet strips, keep the x-window narrow but cover the whole
     # side-shell width in y so the refinement is visible from top to bottom.
@@ -278,11 +277,14 @@ def _add_mesh_size_field(occ) -> None:
     x_rivet_end = max(0.0, min(L, RIVET_STRIP_X_END))
     if x_rivet_end < x_rivet_start:
         x_rivet_start, x_rivet_end = x_rivet_end, x_rivet_start
-    x_centers = np.linspace(
+    x_centers_full = np.linspace(
         x_rivet_start + x_margin,
         x_rivet_end - x_margin,
-        N_RIVET_STRIPS_X,
+        10,
     )
+    i_mid = len(x_centers_full) // 2
+    half_window = N_RIVET_STRIPS_X // 2
+    x_centers = x_centers_full[i_mid - half_window:i_mid + half_window]
     for x_center in x_centers:
         f_box = field.add("Box")
         field.setNumber(f_box, "VIn", RIVET_STRIP_SIZE_MIN)
